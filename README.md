@@ -77,7 +77,7 @@ its own subdomain (e.g. `https://inbox.pranavself.uk` over cloudflared):
     build:
       context: https://github.com/Pinchpranav/inbox.git#main
     ports:
-      - "${INBOX_PORT:-8082}:80"
+      - "${INBOX_PORT:-8083}:80"
     depends_on:
       - openclaw
     restart: unless-stopped

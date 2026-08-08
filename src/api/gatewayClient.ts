@@ -201,15 +201,27 @@ async function buildConnectPlan(
   };
 }
 
-/** Convert an http(s):// gateway URL to ws(s):// for the WebSocket transport. */
+/** Convert a gateway URL into a WebSocket URL for the socket transport.
+ *
+ *  Handles absolute http(s):// URLs and **relative** paths. A relative path
+ *  (e.g. "/gw") is resolved against the current page origin so the WebSocket
+ *  hits the same-origin reverse proxy used in both dev (the Vite `/gw` proxy)
+ *  and prod (the inbox nginx `/gw/` proxy). A trailing slash is added for
+ *  relative paths so the URL matches the proxy's `/gw/` location — the gateway
+ *  WS endpoint is at the root, so "/gw/" becomes "/" once the proxy strips
+ *  the prefix. */
 export function toWebSocketUrl(httpUrl: string): string {
   const trimmed = httpUrl.trim().replace(/\/+$/, "");
   if (trimmed.startsWith("https://")) return `wss://${trimmed.slice(8)}`;
   if (trimmed.startsWith("http://")) return `ws://${trimmed.slice(7)}`;
-  // Already a ws(s):// URL or bare host — pass through.
-  return trimmed.startsWith("ws://") || trimmed.startsWith("wss://")
-    ? trimmed
-    : `ws://${trimmed}`;
+  if (trimmed.startsWith("wss://") || trimmed.startsWith("ws://")) return trimmed;
+  // Relative path → resolve against the current page origin (same-origin proxy).
+  if (typeof window !== "undefined" && trimmed.startsWith("/")) {
+    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${scheme}//${window.location.host}${trimmed}/`;
+  }
+  // Bare host — pass through.
+  return `ws://${trimmed}`;
 }
 
 export { GatewayProtocolRequestError };

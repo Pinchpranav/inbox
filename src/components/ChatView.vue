@@ -161,7 +161,7 @@ watch(
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--bg);
+  background: var(--chat-bg);
   grid-column: 2;
   min-width: 0;
   /* focus pit: subtle inset on top + left edge so the chat reads as recessed */
@@ -384,7 +384,7 @@ watch(
   display: flex;
   gap: 10px;
   align-items: flex-end;
-  background: var(--bg);
+  background: var(--composer-bg);
   border-top: 1px solid var(--border);
 }
 .chat-body.is-empty .composer {

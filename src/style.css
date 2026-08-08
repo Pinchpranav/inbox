@@ -1,0 +1,145 @@
+:root {
+  /* Light mode — grayscale base + semantic STATE colors (color = data only) */
+  --bg: #ffffff;
+  --bg-soft: #f4f4f5;
+  --bg-soft-2: #ebebeb;
+  --border: #e2e2e5;
+  --border-strong: #c9c9cc;
+  --text: #111113;
+  --text-soft: #6b6b72;
+  --text-faint: #9a9aa1;
+  --accent: #111113;
+  --accent-contrast: #ffffff;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
+  --dot-size: 9px;
+  /* semantic state colors (only dots/badges use these) */
+  --state-active: #2563eb;
+  --state-done: #16a34a;
+  /* connection status colors (also data: reflects gateway connection state) */
+  --conn-ok: #16a34a;
+  --conn-loading: #d97706;
+  --conn-error: #dc2626;
+  --conn-demo: #9a9aa1;
+  /* monospace stack for metadata (ledger feel) */
+  --font-mono: ui-monospace, "JetBrains Mono", "Roboto Mono", "Cascadia Code", Menlo, Consolas,
+    monospace;
+  /* focus-pit: soft inset on the chat pane top+left edges */
+  --pit-shadow: inset 2px 0 8px -4px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(0, 0, 0, 0.04);
+  /* user message bubble surface */
+  --user-bubble-bg: #ededff;
+  --user-bubble-text: var(--text);
+  --user-bubble-border: #dcdcef;
+}
+
+html[data-theme="dark"] {
+  --bg: #0a0a0b;
+  --bg-soft: #161618;
+  --bg-soft-2: #1f1f23;
+  --border: #27272b;
+  --border-strong: #3a3a40;
+  --text: #f3f3f5;
+  --text-soft: #9a9aa3;
+  --text-faint: #6b6b73;
+  --accent: #f3f3f5;
+  --accent-contrast: #0a0a0b;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --state-active: #60a5fa;
+  --state-done: #4ade80;
+  --conn-ok: #4ade80;
+  --conn-loading: #fbbf24;
+  --conn-error: #ef4444;
+  --conn-demo: #6b6b73;
+  --pit-shadow: inset 2px 0 10px -3px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(0, 0, 0, 0.5);
+  --user-bubble-bg: #20203a;
+  --user-bubble-text: var(--text);
+  --user-bubble-border: var(--border);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--text);
+  color: var(--bg);
+}
+
+/* Layout shell */
+.app {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+  transition: grid-template-columns 0.16s ease;
+}
+
+.expand-btn {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 50;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font-size: 16px;
+  line-height: 1;
+  box-shadow: var(--shadow);
+}
+.expand-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+/* Scrollbar (subtle, grayscale) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 3px solid var(--bg);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}

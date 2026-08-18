@@ -370,17 +370,31 @@ export class StateStore {
 
   /** All projects. Called by GET /api/projects (routes/projects.ts). */
   getProjects(): Project[] {
+    // Map snake_case DB columns → the camelCase wire shape (Project).
     return (this.db.prepare("SELECT * FROM projection_projects ORDER BY created_at ASC").all() as Array<Record<string, unknown>>).map((r) => ({
-      ...r,
-      emoji: r.emoji ?? undefined,
-    })) as unknown as Project[];
+      id: r.id as string,
+      name: r.name as string,
+      emoji: (r.emoji as string | null) ?? undefined,
+      dir: r.dir as string,
+      state: r.state as State,
+      createdAt: r.created_at as number,
+      updatedAt: r.updated_at as number,
+    })) as Project[];
   }
 
   /** A project's sessions. Called by GET /api/projects/:id/sessions. */
   getSessions(projectId: string): Session[] {
+    // Map snake_case DB columns → the camelCase wire shape (Session).
     return (this.db
       .prepare("SELECT * FROM projection_sessions WHERE project_id = ? ORDER BY last_touched_at DESC")
-      .all(projectId) as Array<Record<string, unknown>>).map((r) => ({ ...r, noInbox: r.noInbox === 1 })) as unknown as Session[];
+      .all(projectId) as Array<Record<string, unknown>>).map((r) => ({
+      key: r.key as string,
+      name: r.name as string,
+      projectId: r.project_id as string,
+      state: r.state as State,
+      noInbox: (r.no_inbox as number) === 1,
+      lastTouchedAt: (r.last_touched_at as number | null) ?? null,
+    })) as Session[];
   }
 
   /**
@@ -388,9 +402,18 @@ export class StateStore {
    * /api/sessions/:key/messages and by piSession.open() to seed a resumed session.
    */
   getMessages(sessionKey: string): Message[] {
+    // Map snake_case DB columns → the camelCase wire shape (Message).
     return (this.db
       .prepare("SELECT * FROM projection_messages WHERE session_key = ? ORDER BY idx ASC")
-      .all(sessionKey) as Array<Record<string, unknown>>).map((r) => ({ ...r, isStreaming: r.isStreaming === 1 })) as unknown as Message[];
+      .all(sessionKey) as Array<Record<string, unknown>>).map((r) => ({
+      id: r.id as string,
+      sessionKey: r.session_key as string,
+      role: r.role as "user" | "assistant",
+      text: r.text as string,
+      isStreaming: (r.is_streaming as number) === 1,
+      timestamp: r.timestamp as number,
+      idx: r.idx as number,
+    })) as Message[];
   }
 
   /**
@@ -398,6 +421,7 @@ export class StateStore {
    * Called by GET /api/inbox (routes/inbox.ts).
    */
   getInbox(now = Date.now(), windowMs = 48 * 60 * 60 * 1000): Session[] {
+    // Map snake_case DB columns → the camelCase wire shape (Session).
     return (this.db
       .prepare(
         `SELECT s.* FROM projection_sessions s
@@ -405,6 +429,13 @@ export class StateStore {
            AND (s.last_touched_at IS NULL OR s.last_touched_at >= ?)
          ORDER BY COALESCE(s.last_touched_at, 0) DESC`,
       )
-      .all(now - windowMs) as Array<Record<string, unknown>>).map((r) => ({ ...r, noInbox: r.noInbox === 1 })) as unknown as Session[];
+      .all(now - windowMs) as Array<Record<string, unknown>>).map((r) => ({
+      key: r.key as string,
+      name: r.name as string,
+      projectId: r.project_id as string,
+      state: r.state as State,
+      noInbox: (r.no_inbox as number) === 1,
+      lastTouchedAt: (r.last_touched_at as number | null) ?? null,
+    })) as Session[];
   }
 }

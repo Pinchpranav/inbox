@@ -17,29 +17,16 @@ import {
   loadConfig,
   saveConfig,
   clearConfig,
-  isConfigured,
-  type GatewayConfig,
+  type BackendConfig,
 } from "./config";
 import * as api from "./api/projectsApi";
-import {
-  ChatGatewayClient,
-  type EventFrame,
-} from "./api/gatewayClient";
-import {
-  extractMessageText,
-  mapHistoryMessages,
-  resolveDeltaChatStreamText,
-  type ChatEventPayload,
-} from "./api/chatStream";
+import { ChatSocket } from "./api/chatSocket";
 
 // ── Gateway config + connection state ────────────────────────────────────
-const config = ref<GatewayConfig>(loadConfig());
-const configured = computed(() => isConfigured(config.value));
-const conn = ref<"ok" | "loading" | "error" | "demo">("demo");
+const config = ref<BackendConfig>(loadConfig());
+const conn = ref<"ok" | "loading" | "error" | "demo">("loading");
 const connError = ref("");
 const settingsOpen = ref(false);
-
-const client = () => ({ url: config.value.url, token: config.value.token });
 
 // ── Sidebar data ──────────────────────────────────────────────────────────
 const projects = ref<Project[]>([]);
@@ -53,14 +40,14 @@ const liveText = ref("");
 const phase = ref<string | null>(null);
 const streaming = ref(false);
 const historyLoading = ref(false);
-let activeRunId: string | null = null;
 
 // Mock-streaming timers (demo mode only).
 let phaseTimer: ReturnType<typeof setInterval> | null = null;
 let wordTimer: ReturnType<typeof setInterval> | null = null;
 
-// Real chat gateway client (configured mode only).
-let chatClient: ChatGatewayClient | null = null;
+// Real chat WS socket (one per active turn).
+let chatSocket: ChatSocket | null = null;
+let abortFallback: ReturnType<typeof setTimeout> | null = null;
 
 const selectedSession = computed(
   () => sessions.value.find((s) => s.key === selectedKey.value) ?? null,
@@ -88,12 +75,12 @@ function loadDemoSeed() {
 }
 
 async function refresh() {
-  if (!configured.value || refreshInFlight) return;
+  if (refreshInFlight) return;
   refreshInFlight = true;
   const wasOk = conn.value === "ok";
   if (!wasOk) conn.value = "loading";
   try {
-    const view = await api.fetchView(client());
+    const view = await api.fetchView();
     projects.value = view.projects;
     sessions.value = view.sessions;
     conn.value = "ok";
@@ -101,7 +88,8 @@ async function refresh() {
     pruneSelection();
   } catch (err) {
     conn.value = "error";
-    connError.value = err instanceof api.GatewayError ? err.message : String(err);
+    connError.value = err instanceof api.ApiError ? err.message : String(err);
+    loadDemoSeed(); // fall back to mock data so the UI isn't empty
   } finally {
     refreshInFlight = false;
   }
@@ -125,74 +113,9 @@ function stopPolling() {
   pollTimer = null;
 }
 
-// ── Chat gateway client lifecycle ─────────────────────────────────────────
-function startChatClient() {
-  stopChatClient();
-  chatClient = new ChatGatewayClient({
-    url: config.value.url,
-    token: config.value.token,
-    onEvent: (event) => handleGatewayEvent(event),
-  });
-  chatClient.start();
-}
-
-function stopChatClient() {
-  if (chatClient) {
-    chatClient.stop();
-    chatClient = null;
-  }
-  activeRunId = null;
-}
-
 function applyConfig() {
-  if (configured.value) {
-    void refresh();
-    startPolling();
-    startChatClient();
-  } else {
-    stopPolling();
-    stopChatClient();
-    loadDemoSeed();
-  }
-}
-
-// ── Gateway event dispatch (chat stream + sessions.changed) ───────────────
-function handleGatewayEvent(event: EventFrame) {
-  const name = (event as { event?: string }).event;
-  const payload = (event as { payload?: ChatEventPayload }).payload;
-  if (!name || !payload) return;
-
-  if (name === "sessions.changed") {
-    // Sidebar changed on the gateway — refresh the REST view promptly.
-    void refresh();
-    return;
-  }
-
-  if (name !== "chat") return;
-
-  // Only react to the selected session's active run.
-  if (selectedKey.value === null || payload.sessionKey !== selectedKey.value) return;
-  if (activeRunId !== null && payload.runId !== activeRunId) return;
-
-  switch (payload.state) {
-    case "status":
-      phase.value = payload.phase || "working…";
-      break;
-    case "delta": {
-      const next = resolveDeltaChatStreamText(liveText.value, payload);
-      if (typeof next === "string") liveText.value = next;
-      break;
-    }
-    case "final":
-      finalizeReal(payload);
-      break;
-    case "aborted":
-      abortReal();
-      break;
-    case "error":
-      errorReal(payload);
-      break;
-  }
+  void refresh();
+  startPolling();
 }
 
 // ── Sidebar actions ───────────────────────────────────────────────────────
@@ -201,32 +124,28 @@ function selectSession(key: string) {
   selectedKey.value = key;
   liveText.value = "";
   phase.value = null;
-  activeRunId = null;
+  closeChat();
 
-  if (!configured.value) {
+  if (conn.value !== "ok") {
     // Demo mode: canned mock history.
     messages.value = (messagesBySession[key] ?? []).map((m) => ({ ...m }));
     return;
   }
-  // Real mode: load chat.history from the gateway.
+  // Real mode: load the transcript from the backend.
   loadHistory(key);
 }
 
 async function loadHistory(key: string) {
-  if (!chatClient) {
-    messages.value = [];
-    return;
-  }
   historyLoading.value = true;
   try {
-    const rows = await chatClient.chatHistory(key);
+    const rows = await api.fetchMessages(key);
     // Discard if the user switched away while we were loading.
     if (selectedKey.value !== key) return;
-    messages.value = mapHistoryMessages(rows);
+    messages.value = rows;
   } catch (err) {
     if (selectedKey.value !== key) return;
     messages.value = [];
-    connError.value = `chat.history: ${err instanceof Error ? err.message : String(err)}`;
+    connError.value = `messages: ${err instanceof Error ? err.message : String(err)}`;
   } finally {
     if (selectedKey.value === key) historyLoading.value = false;
   }
@@ -237,17 +156,19 @@ function newProject() {
   if (!name) return;
   const trimmed = name.trim();
   if (!trimmed) return;
-  if (!configured.value) {
+  if (conn.value !== "ok") {
     const id = trimmed.toLowerCase().replace(/\s+/g, "-");
     if (projects.value.some((p) => p.id === id)) return;
     projects.value.push({ id, name: trimmed, state: "active" });
     return;
   }
+  const dir = window.prompt("Project working directory (absolute path):");
+  if (!dir) return;
   void api
-    .createProject(client(), trimmed)
+    .createProject(trimmed, dir.trim())
     .then(() => refresh())
     .catch((err) => {
-      connError.value = err instanceof api.GatewayError ? err.message : String(err);
+      connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
 }
@@ -257,7 +178,7 @@ function newThread(agentId: string) {
   if (!name) return;
   const trimmed = name.trim();
   if (!trimmed) return;
-  if (!configured.value) {
+  if (conn.value !== "ok") {
     const key = `agent:${agentId}:${Date.now()}`;
     sessions.value.push({
       key,
@@ -271,15 +192,15 @@ function newThread(agentId: string) {
     return;
   }
   void api
-    .createThread(client(), agentId, trimmed)
+    .createThread(agentId, trimmed)
     .then((res) => {
       void refresh().then(() => {
-        const newKey = res.session?.key;
+        const newKey = res.key;
         if (newKey) selectSession(newKey);
       });
     })
     .catch((err) => {
-      connError.value = err instanceof api.GatewayError ? err.message : String(err);
+      connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
 }
@@ -287,11 +208,11 @@ function newThread(agentId: string) {
 function setSessionState(key: string, state: State) {
   const s = sessions.value.find((x) => x.key === key);
   if (s) s.state = state; // optimistic
-  if (!configured.value) return;
+  if (conn.value !== "ok") return;
   void api
-    .setSessionState(client(), key, state)
+    .setSessionState(key, state)
     .catch((err) => {
-      connError.value = err instanceof api.GatewayError ? err.message : String(err);
+      connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
 }
@@ -299,32 +220,32 @@ function setSessionState(key: string, state: State) {
 function toggleNoInbox(key: string) {
   const s = sessions.value.find((x) => x.key === key);
   if (s) s.noInbox = !s.noInbox; // optimistic
-  if (!configured.value) return;
+  if (conn.value !== "ok") return;
   const next = s ? s.noInbox : false;
   void api
-    .setNoInbox(client(), key, next)
+    .setNoInbox(key, next)
     .catch((err) => {
-      connError.value = err instanceof api.GatewayError ? err.message : String(err);
+      connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
 }
 
 function moveSession(key: string, destAgentId: string) {
-  if (!configured.value) {
+  if (conn.value !== "ok") {
     const s = sessions.value.find((x) => x.key === key);
     if (s) s.agentId = destAgentId;
     return;
   }
   void api
-    .moveThread(client(), key, destAgentId)
+    .moveSession(key, destAgentId)
     .then((res) => {
       void refresh().then(() => {
-        const newKey = res.newKey;
+        const newKey = res.key;
         if (newKey && selectedKey.value === key) selectSession(newKey);
       });
     })
     .catch((err) => {
-      connError.value = err instanceof api.GatewayError ? err.message : String(err);
+      connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
 }
@@ -332,17 +253,17 @@ function moveSession(key: string, destAgentId: string) {
 function setProjectState(agentId: string, state: State) {
   const p = projects.value.find((x) => x.id === agentId);
   if (p) p.state = state; // optimistic
-  if (!configured.value) return;
+  if (conn.value !== "ok") return;
   void api
-    .setProjectState(client(), agentId, state)
+    .setProjectState(agentId, state)
     .catch((err) => {
-      connError.value = err instanceof api.GatewayError ? err.message : String(err);
+      connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────
-function onSaveSettings(cfg: GatewayConfig) {
+function onSaveSettings(cfg: BackendConfig) {
   saveConfig(cfg);
   config.value = cfg;
   settingsOpen.value = false;
@@ -350,7 +271,7 @@ function onSaveSettings(cfg: GatewayConfig) {
 }
 function onClearSettings() {
   clearConfig();
-  config.value = { url: "", token: "" };
+  config.value = { url: "" };
   settingsOpen.value = false;
   applyConfig();
 }
@@ -362,16 +283,12 @@ const PHASES = ["preparing context", "preparing workspace", "starting model", "g
 
 function send(text: string) {
   if (!selectedKey.value || streaming.value) return;
-  if (configured.value) sendReal(text);
+  if (conn.value === "ok") sendReal(text);
   else sendMock(text);
 }
 
 function sendReal(text: string) {
   const key = selectedKey.value!;
-  if (!chatClient || !chatClient.connected) {
-    connError.value = "Not connected to gateway — can't send.";
-    return;
-  }
   messages.value.push({ id: `u${Date.now()}`, role: "user", text });
   touch(key);
 
@@ -379,31 +296,41 @@ function sendReal(text: string) {
   liveText.value = "";
   phase.value = "preparing…";
 
-  const idempotencyKey = `sid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  void chatClient
-    .chatSend(key, text, idempotencyKey)
-    .then((runId) => {
-      activeRunId = runId;
-    })
-    .catch((err) => {
-      connError.value = `chat.send: ${err instanceof Error ? err.message : String(err)}`;
-      streaming.value = false;
-      phase.value = null;
+  chatSocket = new ChatSocket(key, {
+    onDelta: (t) => {
+      liveText.value += t;
+    },
+    onEnd: (m) => {
+      const settled = m.text?.trim() || liveText.value || "";
+      if (settled) {
+        messages.value.push({ id: m.id || `a${Date.now()}`, role: "assistant", text: settled });
+      }
       liveText.value = "";
-    });
-}
-
-function finalizeReal(payload: ChatEventPayload) {
-  const text = extractMessageText(payload.message)?.trim() || liveText.value || "";
-  if (text) {
-    messages.value.push({ id: `a${Date.now()}`, role: "assistant", text });
-  }
-  const key = selectedKey.value;
-  if (key) touch(key);
-  liveText.value = "";
-  phase.value = null;
-  streaming.value = false;
-  activeRunId = null;
+    },
+    onStatus: (p) => {
+      if (p === "idle") {
+        streaming.value = false;
+        phase.value = null;
+        closeChat();
+      } else if (p === "aborted") {
+        abortReal();
+        closeChat();
+      } else if (p === "error") {
+        errorReal("⚠ chat error");
+        closeChat();
+      } else if (p === "streaming") {
+        phase.value = "generating…";
+      }
+    },
+    onError: (msg) => {
+      errorReal(msg);
+      closeChat();
+    },
+    onOpen: () => {
+      chatSocket?.sendPrompt(text);
+    },
+  });
+  chatSocket.connect();
 }
 
 function abortReal() {
@@ -418,28 +345,37 @@ function abortReal() {
   liveText.value = "";
   phase.value = null;
   streaming.value = false;
-  activeRunId = null;
 }
 
-function errorReal(payload: ChatEventPayload) {
-  const text = payload.errorMessage?.trim() || "⚠ chat error";
+function errorReal(msg: string) {
+  const text = msg?.trim() || "⚠ chat error";
   messages.value.push({ id: `a${Date.now()}`, role: "assistant", text });
   liveText.value = "";
   phase.value = null;
   streaming.value = false;
-  activeRunId = null;
+}
+
+function closeChat() {
+  if (abortFallback) {
+    clearTimeout(abortFallback);
+    abortFallback = null;
+  }
+  if (chatSocket) {
+    chatSocket.close();
+    chatSocket = null;
+  }
 }
 
 function abort() {
   if (!streaming.value) return;
-  if (configured.value && chatClient && activeRunId && selectedKey.value) {
-    void chatClient.chatAbort(selectedKey.value, activeRunId).catch(() => {
-      /* the gateway will send `aborted` regardless; ignore local errors */
-    });
-    // The `aborted` event finalizes the UI. If it never arrives, clear locally.
-    setTimeout(() => {
+  if (conn.value === "ok" && chatSocket) {
+    chatSocket.sendAbort();
+    // The server sends a terminal status (aborted) after abort; if it never
+    // arrives, clear locally so the UI can't hang.
+    abortFallback = setTimeout(() => {
       if (streaming.value) abortReal();
-    }, 1500);
+      closeChat();
+    }, 2000);
   } else {
     abortMock();
   }
@@ -515,7 +451,7 @@ function clearTimers() {
 onMounted(() => applyConfig());
 onUnmounted(() => {
   stopPolling();
-  stopChatClient();
+  closeChat();
   clearTimers();
 });
 </script>

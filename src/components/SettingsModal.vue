@@ -1,35 +1,33 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
-import type { GatewayConfig } from "../config";
+import type { BackendConfig } from "../config";
 
 const props = defineProps<{
   open: boolean;
-  config: GatewayConfig;
+  config: BackendConfig;
   conn?: "ok" | "loading" | "error" | "demo";
   connError?: string;
 }>();
 
 const emit = defineEmits<{
-  save: [cfg: GatewayConfig];
+  save: [cfg: BackendConfig];
   clear: [];
   close: [];
 }>();
 
 const url = ref(props.config.url);
-const token = ref(props.config.token);
 
 watch(
   () => props.open,
   (open) => {
     if (open) {
       url.value = props.config.url;
-      token.value = props.config.token;
     }
   },
 );
 
 function save() {
-  emit("save", { url: url.value.trim(), token: token.value.trim() });
+  emit("save", { url: url.value.trim() });
 }
 </script>
 
@@ -37,32 +35,21 @@ function save() {
   <div v-if="open" class="overlay" @click.self="$emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <h2>Gateway settings</h2>
+        <h2>Backend settings</h2>
         <button class="x" title="Close" @click="$emit('close')">×</button>
       </div>
 
       <p class="hint">
-        Connect the sidebar to a real openclaw gateway's <code>projects</code> plugin
-        (<code>/plugins/projects/api</code>). Leave both blank to stay in demo mode.
+        Connect the sidebar to the Hono backend (<code>/api</code>). Leave blank to use the
+        same-origin backend (Vite proxy in dev, nginx in prod).
       </p>
 
       <label class="field">
-        <span>Gateway URL</span>
+        <span>Backend URL</span>
         <input
           v-model="url"
           type="text"
-          placeholder="http://localhost:18789"
-          autocomplete="off"
-          spellcheck="false"
-        />
-      </label>
-
-      <label class="field">
-        <span>Gateway token</span>
-        <input
-          v-model="token"
-          type="password"
-          placeholder="bearer token"
+          placeholder="http://localhost:8787"
           autocomplete="off"
           spellcheck="false"
         />
@@ -76,7 +63,7 @@ function save() {
           <template v-else-if="conn === 'error'">{{
             connError || "Connection error"
           }}</template>
-          <template v-else>Demo mode (no gateway)</template>
+          <template v-else>Demo mode (no backend)</template>
         </span>
       </div>
 

@@ -33,13 +33,13 @@ const emit = defineEmits<{
 function connTitle(): string {
   switch (props.conn) {
     case "ok":
-      return "Connected to gateway";
+      return "Connected to backend";
     case "loading":
       return "Connecting…";
     case "error":
       return props.connError || "Connection error";
     case "demo":
-      return "Demo mode — no gateway configured (click ⚙ to connect)";
+      return "Demo mode — backend unreachable (click ⚙ to configure)";
     default:
       return "Connection unknown";
   }
@@ -100,7 +100,7 @@ function onMove(s: Session) {
   <aside class="sidebar">
     <div class="head">
       <span class="conn-dot" :data-conn="conn ?? 'demo'" :title="connTitle()"></span>
-      <button class="gear-btn" title="Gateway settings" @click="$emit('open-settings')">⚙</button>
+      <button class="gear-btn" title="Backend settings" @click="$emit('open-settings')">⚙</button>
       <h1 class="brand">Threads</h1>
       <button class="collapse-btn" title="Collapse sidebar" @click="$emit('collapse')">«</button>
     </div>

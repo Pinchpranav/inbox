@@ -4,6 +4,7 @@ node_modules/
 # build output
 dist/
 dist-ssr/
+*.tsbuildinfo
 
 # local env (keep .env.example; ignore real secrets)
 .env

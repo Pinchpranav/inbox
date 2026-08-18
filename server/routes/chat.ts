@@ -9,6 +9,18 @@
 // message is persisted but its message.sent is NOT forwarded (the browser
 // already rendered it).
 //
+// Per-turn lifecycle (review fixes):
+//   - The PROMPT handler owns the single terminal status frame. It waits on
+//     `session.prompt()` (NOT `relay.finished`), so it can't hang when a turn
+//     ends without a text_end (empty / aborted / silent-error). It reports
+//     "idle" normally, "aborted" if abortRequested was set.
+//   - ABORT only interrupts the engine (`session.abort()`) + sets the
+//     abortRequested flag; it never emits a terminal frame, so prompt and abort
+//     can't race to contradictory states.
+//   - Each relay is unsubscribed in `finally` (it lives for exactly one turn) —
+//     otherwise listeners leak on the reused per-key AgentSession and a stale
+//     relay double-persists/publishes on later turns.
+//
 // ── FLOW (who calls what) ─────────────────────────────────────────────
 //   index.ts (entry, build-5ei):
 //     const { app, injectWebSocket } = createChatRouter(deps)
@@ -24,7 +36,7 @@ import { Hono } from "hono";
 import { createNodeWebSocket, type NodeWebSocket } from "@hono/node-ws";
 import type { StateStore, Message } from "../stateStore.ts";
 import type { PiSessionManager, SessionHandle } from "../piSession.ts";
-import { recordUserMessage, attachAssistantRelay } from "../relay.ts";
+import { recordUserMessage, attachAssistantRelay, type AttachedRelay } from "../relay.ts";
 import { bus, EVENT, type BusEvent } from "../bus.ts";
 import type { ClientFrame } from "../types.ts";
 
@@ -59,6 +71,7 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
       // Per-connection state:
       let currentHandle: SessionHandle | undefined; // the open AgentSession, for abort
       let busy = false; // guard: one turn at a time per connection
+      let abortRequested = false; // set by the abort handler; read by the prompt handler (which owns the terminal frame)
       let busHandler: ((ev: BusEvent) => void) | null = null; // for cleanup via bus.off
 
       return {
@@ -98,6 +111,11 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
           }
 
           if (frame.type === "prompt") {
+            // Validate the prompt text before persisting (a non-string would write a NULL row).
+            if (typeof frame.text !== "string" || !frame.text.trim()) {
+              wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: "prompt text is required" }));
+              return;
+            }
             const text = frame.text; // narrowed here (inside the async closure TS resets it)
             void (async () => {
               if (busy) {
@@ -105,6 +123,9 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
                 return;
               }
               busy = true;
+              abortRequested = false;
+              // The relay is scoped here so its `finally` unsubscribe always runs (stale-relay fix).
+              let relay: AttachedRelay | null = null;
               try {
                 // ① persist user msg (NOT forwarded to browser — it already rendered it)
                 recordUserMessage(store, sessionKey, text);
@@ -114,27 +135,35 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
                 // ③ attach the relay: persists + publishes each assistant delta/end
                 // piSession types subscribe as `(ev: unknown)` while the relay (proven) expects
                 // `PiEvent`; both are proven files, so we adapt at the seam with a cast.
-                const relay = attachAssistantRelay(
+                relay = attachAssistantRelay(
                   store,
                   sessionKey,
                   handle.session as Parameters<typeof attachAssistantRelay>[2],
                 );
-                // ④ run the engine (fires the relay's subscribe callback)
+                // ④ run the engine (fires the relay's subscribe callback). Awaiting the prompt
+                // resolves when the turn is done — this, NOT `relay.finished`, is the terminal
+                // signal, so we can't hang if no text_end fires (empty/aborted/silent-error turn).
                 await handle.session.prompt(text);
-                // ⑤ wait for text_end, then report idle
-                await relay.finished;
-                wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "idle" }));
+                // ⑤ the prompt handler owns the single terminal frame (no race with abort).
+                if (abortRequested) {
+                  wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "aborted" }));
+                } else {
+                  wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "idle" }));
+                }
               } catch (err) {
                 wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: String(err) }));
               } finally {
+                relay?.unsubscribe(); // detach this turn's relay from the shared AgentSession (stale-relay fix)
                 busy = false;
               }
             })();
           } else if (frame.type === "abort") {
             void (async () => {
+              // Abort only interrupts the engine + sets the flag; the prompt handler owns the
+              // terminal frame, so we never get a second conflicting status here.
+              abortRequested = true;
               try {
                 if (currentHandle) await currentHandle.session.abort();
-                wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "aborted" }));
               } catch (err) {
                 wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: String(err) }));
               }

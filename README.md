@@ -1,5 +1,9 @@
 # inbox-project
 
+> **⚠️ This README describes the OLD OpenClaw architecture.** The project is being
+> rewired onto a new Hono + pi backend. **Read `CONTEXT.md` first** — it points to
+> the design docs, the Beads build tickets (`bd ready`), and the proven step files.
+
 A thin standalone web app (Vue 3 + Vite + TypeScript) that turns the
 [OpenClaw](https://github.com/openclaw/openclaw) gateway into an inbox-style
 sidebar + chat: your projects and threads on the left, the conversation on the

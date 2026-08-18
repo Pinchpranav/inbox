@@ -9,16 +9,22 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "@hono/node-server": "latest",
+    "@hono/node-ws": "latest",
     "@openclaw/gateway-client": "2026.7.2-beta.7",
     "@openclaw/gateway-protocol": "2026.7.2-beta.7",
+    "hono": "latest",
     "markdown-it": "^14.3.0",
     "markdown-it-task-lists": "^2.1.1",
+    "pi-ollama-cloud": "latest",
     "vue": "^3.5.13"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^26.2.0",
     "@vitejs/plugin-vue": "^5.2.4",
+    "tsx": "latest",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",
     "vue-tsc": "^2.2.0"

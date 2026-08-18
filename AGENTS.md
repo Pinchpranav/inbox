@@ -1,5 +1,8 @@
 # Agent Instructions
 
+> **Read `CONTEXT.md` first** — it points to the design docs, the Beads build
+> tickets (`bd ready`), and the proven step files for this project.
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database

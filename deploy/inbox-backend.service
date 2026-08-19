@@ -40,8 +40,10 @@ RestartSec=3
 # Give the backend time to shut down sessions + close the sqlite store.
 TimeoutStopSec=30
 
-# backend.sh uses the repo-local tsx, so systemd PATH only needs the basics.
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# backend.sh uses the repo-local tsx, whose shebang needs `node` on PATH.
+# node here lives under nvm, which systemd does NOT load (it's shell-init only),
+# so the nvm bin dir MUST be on PATH explicitly. Adjust version/path to your box.
+Environment=PATH=/home/pranav/.nvm/versions/node/v24.19.0/bin:/usr/local/bin:/usr/bin:/bin
 
 # Ship stdout/stderr to the journal so `journalctl -u inbox-backend -f` works.
 StandardOutput=journal

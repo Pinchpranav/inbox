@@ -1,0 +1,51 @@
+# inbox backend — systemd unit for 24/7 operation.
+#
+# Install:
+#   sudo cp deploy/inbox-backend.service /etc/systemd/system/
+#   sudo sed -i 's|/path/to/inbox|<ABSOLUTE_REPO_PATH_ON_VPS>|g' \
+#       /etc/systemd/system/inbox-backend.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now inbox-backend
+#
+# Then start.sh step 4 just ensures this service is active (it does not
+# reinstall the unit, so adjust paths here once).
+#
+# View live output / follow streaming like a tmux attach:
+#   journalctl -u inbox-backend -f
+#
+# Secrets come from deploy/.env (sourced by backend.sh) — no secrets in this file.
+
+[Unit]
+Description=inbox Hono backend (24/7)
+# Start only once the network is up (backend binds a port + calls ollama-cloud).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the deploy user (owns the repo + ~/.pi/agent). The bead pins "pranav".
+User=pranav
+Group=pranav
+# Adjust to the repo's absolute path on the VPS (see install instructions above).
+WorkingDirectory=/path/to/inbox
+
+# Self-healing: restart on ANY abnormal exit (crash, killed), wait 3s, retry.
+Restart=on-failure
+RestartSec=3
+# Guard against a crash-loop spin (5 failed starts within 60s -> back off).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Give the backend time to shut down sessions + close the sqlite store.
+TimeoutStopSec=30
+
+# backend.sh uses the repo-local tsx, so systemd PATH only needs the basics.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+# Ship stdout/stderr to the journal so `journalctl -u inbox-backend -f` works.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=inbox-backend
+
+[Install]
+WantedBy=multi-user.target

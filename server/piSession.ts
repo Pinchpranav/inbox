@@ -88,7 +88,10 @@ export class PiSessionManager {
   private constructor(store: StateStore, private opts: PiSessionManagerOpts) {
     this.store = store;
     this.modelProvider = opts.modelProvider ?? "ollama-cloud";
-    this.modelId = opts.modelId ?? "gemma4:31b";
+    // Model id must match an entry in GENERATED_MODELS (pi-ollama-cloud).
+    // "deepseek-v4-flash:cloud" does NOT exist — the "cloud" bit is the provider,
+    // not the model. Options: deepseek-v4-flash:0731 | deepseek-v4-flash:preview | deepseek-v4-pro
+    this.modelId = opts.modelId ?? "deepseek-v4-flash:0731";
   }
 
   /**

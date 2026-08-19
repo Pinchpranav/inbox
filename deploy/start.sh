@@ -7,12 +7,13 @@
 #   1. install deps (only if missing)      pnpm install
 #   2. build the frontend                  pnpm build   -> dist/
 #   3. install + reload nginx               serve dist/ + proxy /api -> backend
-#   4. ensure the backend is up             in a herdr pane (self-healing)
+#   4. ensure the backend is up             systemd service (deploy/backend.sh)
 #   5. ensure the cloudflared tunnel        (tunnel + Cloudflare Access)
 #   6. health checks + status report
 #
-# Assumes nginx, herdr and cloudflared are ALREADY INSTALLED (system services).
-# Secrets live in deploy/.env (gitignored). Run as a user with nginx + herdr rights.
+# Assumes nginx and cloudflared are ALREADY INSTALLED (system services), and that
+# the inbox backend systemd unit (deploy/inbox-backend.service) is installed once.
+# Secrets live in deploy/.env (gitignored). Run as a user with nginx + sudo rights.
 
 set -euo pipefail
 
@@ -37,44 +38,23 @@ sed "s|__DIST__|$DIST_PATH|g; s|__BACKEND__|$BACKEND|g" deploy/nginx.conf > /etc
 nginx -t
 nginx -s reload
 
-echo "==>[4/6] ensuring the backend runs in a herdr pane"
-ensure_backend() {
-  # Already up? Nothing to do.
-  if curl -sf "$HEALTH" >/dev/null 2>&1; then
-    echo "  backend already healthy at $HEALTH — skipping"
-    return 0
+echo "==>[4/6] ensuring the backend systemd service is running"
+SERVICE="inbox-backend.service"
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+    echo "  $SERVICE already active — skipping"
+  elif systemctl enable --now "$SERVICE" 2>/dev/null; then
+    echo "  enabled + started $SERVICE"
+  else
+    echo "  ! could not start $SERVICE — is deploy/inbox-backend.service installed?" >&2
+    echo "    sudo cp deploy/inbox-backend.service /etc/systemd/system/" >&2
+    echo "    sudo sed -i 's|/path/to/inbox|$REPO|g' /etc/systemd/system/inbox-backend.service" >&2
+    echo "    sudo systemctl daemon-reload && sudo systemctl enable --now inbox-backend" >&2
   fi
-  if ! command -v herdr >/dev/null 2>&1; then
-    echo "  ! herdr not found — start it manually:" >&2
-    echo "    cd $REPO && ./deploy/backend.sh   (in a herdr pane)" >&2
-    return 1
-  fi
-
-  # Reuse an existing 'inbox' workspace, else create one (idempotent).
-  local ws pane
-  ws="$(herdr workspace list 2>/dev/null \
-        | grep -o '"label":"inbox"[^}]*"workspace_id":"[a-z0-9]*"' \
-        | sed -E 's/.*"workspace_id":"([a-z0-9]*)".*/\1/' | head -1)"
-  if [ -z "$ws" ]; then
-    ws="$(herdr workspace create --cwd "$REPO" --label inbox 2>/dev/null \
-          | grep -o '"workspace_id":"[a-z0-9]*"' \
-          | sed -E 's/.*"workspace_id":"([a-z0-9]*)".*/\1/' | head -1)"
-  fi
-  [ -z "$ws" ] && ws="w1"
-
-  # Root pane of that workspace (fall back to <ws>:p1).
-  pane="$(herdr pane list --workspace "$ws" 2>/dev/null \
-          | grep -o '"pane_id":"[a-z0-9:]*"' \
-          | sed -E 's/.*"pane_id":"([a-z0-9:]*)".*/\1/' | head -1)"
-  [ -z "$pane" ] && pane="${ws}:p1"
-
-  echo "  using herdr workspace '$ws' pane '$pane'"
-  herdr pane run "$pane" "cd $REPO && ./deploy/backend.sh" >/dev/null 2>&1 || {
-    echo "  ! could not launch backend pane — verify with: herdr pane list" >&2
-    return 1
-  }
-}
-ensure_backend || echo "  (backend not auto-started — see note above)"
+else
+  echo "  ! systemctl not available — start the backend manually:" >&2
+  echo "    cd $REPO && ./deploy/backend.sh" >&2
+fi
 
 echo "==>[5/6] checking cloudflared tunnel status (you manage the tunnel/access)"
 if command -v cloudflared >/dev/null 2>&1; then
@@ -92,8 +72,8 @@ for _ in $(seq 1 30); do
   if curl -sf "$HEALTH" >/dev/null 2>&1; then echo "  backend OK  $HEALTH"; break; fi
   sleep 1
 done
-curl -sf "$HEALTH" >/dev/null 2>&1 || echo "  ! backend did not come up — check the herdr pane"
+curl -sf "$HEALTH" >/dev/null 2>&1 || echo "  ! backend did not come up — check: journalctl -u inbox-backend -f"
 
 echo
 echo "Done. Frontend on http://<host>/ (nginx, same-origin) — backend via /api -> $BACKEND."
-echo "Reattach to the backend pane anytime:  herdr"
+echo "Follow backend output:  journalctl -u inbox-backend -f"

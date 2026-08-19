@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# Self-healing wrapper for the inbox backend.
+# inbox backend — single-shot launcher for the Hono backend.
 #
-# Runs the Hono backend in a loop so a crash auto-restarts (simple "while true").
-# Intended to run inside a herdr pane so it stays alive 24/7 and reattachable.
+# Runs under systemd (deploy/inbox-backend.service), which owns supervision:
+#   - Restart=on-failure  -> auto-restart on any abnormal exit (self-healing)
+#   - multi-user.target   -> starts on boot (survives reboots)
 #
-# Env: sources deploy/.env (gitignored) for OLLAMA_API_KEY and optional overrides.
+# This script does NOT wrap the server in a while-loop. Under systemd that loop
+# is redundant AND harmful: it would mask the process status from systemd and
+# keep respawning the backend after `systemctl stop`.
+#
+# We use `exec` so the node process replaces this shell; signals (SIGTERM from
+# systemctl stop, etc.) then go straight to the backend, which shuts down its
+# sessions + sqlite store gracefully (see server/index.ts SIGTERM handler).
 
-set -u
+set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
-# Load secrets (optional — start.sh and the herdr pane both source the same file).
+# Load secrets (gitignored deploy/.env: OLLAMA_API_KEY + optional overrides).
 [ -f deploy/.env ] && { set -a; . deploy/.env; set +a; }
 
-while true; do
-  echo "[backend] starting at $(date '+%H:%M:%S')"
-  npx tsx server/index.ts
-  code=$?
-  echo "[backend] exited (code $code) at $(date '+%H:%M:%S') — restarting in 2s"
-  sleep 2
-done
+echo "[inbox-backend] starting at $(date '+%Y-%m-%d %H:%M:%S') (pid $$)"
+# Use the repo-local tsx bin (no dependence on npx/PATH inside systemd).
+exec ./node_modules/.bin/tsx server/index.ts

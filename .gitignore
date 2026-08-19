@@ -10,6 +10,8 @@ dist-ssr/
 .env
 .env.local
 .env.*.local
+# deploy secrets (keep deploy/.env.example)
+deploy/.env
 
 # logs
 *.log

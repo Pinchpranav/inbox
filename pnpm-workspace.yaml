@@ -1,0 +1,7 @@
+# pnpm build-script approval (pnpm v11 moved this out of package.json#pnpm).
+# These deps need their postinstall to run (esbuild's native binary is used by
+# both vite build and tsx). Without this, pnpm refuses to run them by default.
+onlyBuiltDependencies:
+  - esbuild
+  - "@google/genai"
+  - protobufjs

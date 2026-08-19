@@ -13,7 +13,8 @@
 #
 # Assumes nginx and cloudflared are ALREADY INSTALLED (system services), and that
 # the inbox backend systemd unit (deploy/inbox-backend.service) is installed once.
-# Secrets live in deploy/.env (gitignored). Run as a user with nginx + sudo rights.
+# Secrets live in deploy/.env (gitignored). Root is required only for the nginx +.
+# systemd steps; this script auto-elevates via sudo when run as a non-root user.
 
 set -euo pipefail
 
@@ -22,6 +23,13 @@ cd "$REPO"
 
 # 0. Load secrets (gitignored deploy/.env) — optional.
 [ -f deploy/.env ] && { set -a; . deploy/.env; set +a; }
+
+# Root is needed for writing nginx config, nginx -t/reload, and systemctl.
+# Elevate just those commands (build/install stay as the invoking user).
+SUDO=""
+if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+  SUDO="sudo"
+fi
 
 BACKEND="${INBOX_BACKEND:-localhost:8787}"
 # Our nginx listens on a free loopback port (not :80, which Coolify owns here).
@@ -37,16 +45,25 @@ pnpm build
 
 echo "==>[3/6] configuring nginx (serve dist/ + proxy /api -> $BACKEND on $LISTEN)"
 DIST_PATH="$REPO/dist"
-sed "s|__DIST__|$DIST_PATH|g; s|__BACKEND__|$BACKEND|g; s|__LISTEN__|$LISTEN|g" deploy/nginx.conf > /etc/nginx/conf.d/inbox.conf
-nginx -t
-nginx -s reload
+$SUDO sh -c "sed \"s|__DIST__|$DIST_PATH|g; s|__BACKEND__|$BACKEND|g; s|__LISTEN__|$LISTEN|g\" deploy/nginx.conf > /etc/nginx/conf.d/inbox.conf"
+$SUDO nginx -t
+if $SUDO systemctl is-active --quiet nginx 2>/dev/null; then
+  $SUDO nginx -s reload
+else
+  echo "  nginx not running — starting it"
+  $SUDO systemctl start nginx \
+    || echo "  ! could not start nginx — the apt default site binds :80 (Coolify owns it). Remove it and retry:" >&2
+  $SUDO rm -f /etc/nginx/sites-enabled/default
+  $SUDO systemctl enable nginx
+  $SUDO systemctl start nginx || echo "  ! nginx still not starting — check: journalctl -u nginx" >&2
+fi
 
 echo "==>[4/6] ensuring the backend systemd service is running"
 SERVICE="inbox-backend.service"
 if command -v systemctl >/dev/null 2>&1; then
-  if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+  if $SUDO systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
     echo "  $SERVICE already active — skipping"
-  elif systemctl enable --now "$SERVICE" 2>/dev/null; then
+  elif $SUDO systemctl enable --now "$SERVICE" 2>/dev/null; then
     echo "  enabled + started $SERVICE"
   else
     echo "  ! could not start $SERVICE — is deploy/inbox-backend.service installed?" >&2

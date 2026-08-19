@@ -20,21 +20,21 @@ Description=inbox Hono backend (24/7)
 # Start only once the network is up (backend binds a port + calls ollama-cloud).
 After=network-online.target
 Wants=network-online.target
+# Guard against a crash-loop spin (5 failed starts within 60s -> back off).
+# NOTE: StartLimit* must be in [Unit] (systemd >= 230 rejects them in [Service]).
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
-# Run as the deploy user (owns the repo + ~/.pi/agent). The bead pins "pranav".
+# Run as the deploy user (owns the repo). The bead pins "pranav".
 User=pranav
-Group=pranav
 # Adjust to the repo's absolute path on the VPS (see install instructions above).
 WorkingDirectory=/path/to/inbox
 
 # Self-healing: restart on ANY abnormal exit (crash, killed), wait 3s, retry.
 Restart=on-failure
 RestartSec=3
-# Guard against a crash-loop spin (5 failed starts within 60s -> back off).
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Give the backend time to shut down sessions + close the sqlite store.
 TimeoutStopSec=30

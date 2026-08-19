@@ -15,7 +15,8 @@
 // router built, so the node-ws upgrade handler is registered on the exact app
 // instance that gets served.
 
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { mkdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { serve, type ServerType } from "@hono/node-server";
 import { Hono } from "hono";
@@ -72,6 +73,12 @@ export interface MainDeps {
  * serve HTTP + WS, and install graceful-shutdown handlers. Returns handles for tests.
  */
 export async function main(deps: MainDeps): Promise<{ app: Hono; store: StateStore; manager: PiSessionManager; server: ServerType }> {
+  // The sqlite file lives in a subdir (default .inbox/) that node:sqlite will
+  // NOT create for us — on a fresh clone it doesn't exist and DatabaseSync
+  // throws. Create it so the backend can boot anywhere. (dbPath is always set
+  // here: main() is called with deps.dbPath from the isMain block or a test.)
+  mkdirSync(dirname(deps.dbPath), { recursive: true });
+
   const store = new StateStore(deps.dbPath);
   store.rebuildProjections();
 

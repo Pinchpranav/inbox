@@ -31,6 +31,7 @@ Type=simple
 User=pranav
 # Adjust to the repo's absolute path on the VPS (see install instructions above).
 WorkingDirectory=/path/to/inbox
+ExecStart=/path/to/inbox/deploy/backend.sh
 
 # Self-healing: restart on ANY abnormal exit (crash, killed), wait 3s, retry.
 Restart=on-failure

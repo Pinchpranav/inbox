@@ -49,30 +49,42 @@ ensure_backend() {
     echo "    cd $REPO && ./deploy/backend.sh   (in a herdr pane)" >&2
     return 1
   fi
-  # Create an 'inbox' workspace and run the self-healing backend in its root pane.
-  # NOTE: verify the exact flags + JSON ids with `herdr workspace create --help`
-  # and `herdr workspace list` on the VPS — output shape is version-dependent.
-  local ws
-  ws="$(herdr workspace create --cwd "$REPO" --label inbox 2>/dev/null \
-        | sed -nE 's/.*"(workspace(_id)?|id)"[[:space:]]*:[[:space:]]*"([a-z0-9:]+)".*/\3/p' | head -1)"
-  [ -z "$ws" ] && ws="$(herdr workspace list 2>/dev/null \
-        | grep -i inbox | head -1 | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*"([a-z0-9]+)".*/\1/p')"
+
+  # Reuse an existing 'inbox' workspace, else create one (idempotent).
+  local ws pane
+  ws="$(herdr workspace list 2>/dev/null \
+        | grep -o '"label":"inbox"[^}]*"workspace_id":"[a-z0-9]*"' \
+        | sed -E 's/.*"workspace_id":"([a-z0-9]*)".*/\1/' | head -1)"
+  if [ -z "$ws" ]; then
+    ws="$(herdr workspace create --cwd "$REPO" --label inbox 2>/dev/null \
+          | grep -o '"workspace_id":"[a-z0-9]*"' \
+          | sed -E 's/.*"workspace_id":"([a-z0-9]*)".*/\1/' | head -1)"
+  fi
   [ -z "$ws" ] && ws="w1"
-  echo "  using herdr workspace '$ws'"
-  herdr pane run "${ws}:p1" "cd $REPO && ./deploy/backend.sh" >/dev/null 2>&1 || {
+
+  # Root pane of that workspace (fall back to <ws>:p1).
+  pane="$(herdr pane list --workspace "$ws" 2>/dev/null \
+          | grep -o '"pane_id":"[a-z0-9:]*"' \
+          | sed -E 's/.*"pane_id":"([a-z0-9:]*)".*/\1/' | head -1)"
+  [ -z "$pane" ] && pane="${ws}:p1"
+
+  echo "  using herdr workspace '$ws' pane '$pane'"
+  herdr pane run "$pane" "cd $REPO && ./deploy/backend.sh" >/dev/null 2>&1 || {
     echo "  ! could not launch backend pane — verify with: herdr pane list" >&2
     return 1
   }
 }
 ensure_backend || echo "  (backend not auto-started — see note above)"
 
-echo "==>[5/6] ensuring cloudflared tunnel"
+echo "==>[5/6] checking cloudflared tunnel status (you manage the tunnel/access)"
 if command -v cloudflared >/dev/null 2>&1; then
-  # Idempotent: only start if not already running.
-  pgrep -f "cloudflared tunnel" >/dev/null 2>&1 || \
-    (sudo systemctl start cloudflared 2>/dev/null || nohup cloudflared tunnel run inbox >>"$REPO/deploy/cloudflared.log" 2>&1 &)
+  if pgrep -f "cloudflared tunnel" >/dev/null 2>&1; then
+    echo "  cloudflared tunnel: RUNNING"
+  else
+    echo "  cloudflared tunnel: NOT running (start it yourself when ready)"
+  fi
 else
-  echo "  ! cloudflared not found — start your tunnel manually"
+  echo "  cloudflared not found — install it when you set up the tunnel"
 fi
 
 echo "==>[6/6] health checks"

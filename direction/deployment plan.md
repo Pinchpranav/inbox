@@ -23,7 +23,7 @@ it over HTTPS. One command brings the local-facing pieces up:
 
 ```
 Browser → Cloudflare Access (email allowlist) → cloudflared tunnel
-    → nginx (:80/:443)
+    → nginx (loopback 127.0.0.1:8085)
         ├── /           serves built SPA (dist/)          ← pnpm build
         └── /api/*      reverse-proxy (HTTP + WS) → backend :8787
                                              ↑

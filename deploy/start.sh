@@ -24,6 +24,9 @@ cd "$REPO"
 [ -f deploy/.env ] && { set -a; . deploy/.env; set +a; }
 
 BACKEND="${INBOX_BACKEND:-localhost:8787}"
+# Our nginx listens on a free loopback port (not :80, which Coolify owns here).
+# Override with INBOX_LISTEN in deploy/.env if 8085 is taken on the box.
+LISTEN="${INBOX_LISTEN:-127.0.0.1:8085}"
 HEALTH="http://$BACKEND/api/health"
 
 echo "==>[1/6] deps (if missing)"
@@ -32,9 +35,9 @@ echo "==>[1/6] deps (if missing)"
 echo "==>[2/6] building frontend -> dist/"
 pnpm build
 
-echo "==>[3/6] configuring nginx (serve dist/ + proxy /api -> $BACKEND)"
+echo "==>[3/6] configuring nginx (serve dist/ + proxy /api -> $BACKEND on $LISTEN)"
 DIST_PATH="$REPO/dist"
-sed "s|__DIST__|$DIST_PATH|g; s|__BACKEND__|$BACKEND|g" deploy/nginx.conf > /etc/nginx/conf.d/inbox.conf
+sed "s|__DIST__|$DIST_PATH|g; s|__BACKEND__|$BACKEND|g; s|__LISTEN__|$LISTEN|g" deploy/nginx.conf > /etc/nginx/conf.d/inbox.conf
 nginx -t
 nginx -s reload
 

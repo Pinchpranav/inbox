@@ -1,0 +1,2 @@
+Q: Go in-depth on @direction/ structure — is it how it should be? Identify big architectural issues, not small bug fixes.
+A: The direction layer is split across two locations (repo `direction/` and sibling `openclaw-direction/`), the docs are monolithic markdown rather than a queryable spec surface, and the whole build is blueprint-driven from prose instead of generated/contracts-verified artifacts, creating drift, hidden ambiguity, and a single-writer bottleneck.

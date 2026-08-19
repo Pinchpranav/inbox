@@ -1,0 +1,2 @@
+Q: Understand the codebase (Hono + pi backend, Vue frontend) so I can review and sharpen it.
+A: The repo is a Vue 3 + Vite + TS frontend (src/) talking over HTTP+WS to a Hono backend (server/) that holds one in-process pi AgentSession per conversation and persists everything to sqlite (event-sourcing + projections) — a clean "brain (pi) / state (sqlite)" split; the core loop (projects/sessions/inbox/conversations/streaming) is built and typechecks, while memory (dolt/Beads), subagents and schedules are later-phase seams.

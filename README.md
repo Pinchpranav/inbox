@@ -43,9 +43,8 @@ Browser (Vue) ──HTTP + WS──▶ Hono backend (server/) ──▶ pi Agent
 | 12 | noInbox toggle | `PATCH /api/sessions/:key/noInbox` `{noInbox}` |
 | 13 | move thread | `POST /api/sessions/:key/move` `{destProjectId}` |
 
-> The backend also exposes `GET /api/inbox` and `GET /api/health`, but the
-> frontend currently derives the inbox client-side and uses `fetchView()` as its
-> health check.
+> The backend also exposes `GET /api/inbox`, but the frontend currently derives the
+> inbox client-side and uses `fetchView()` as its health check.
 
 ## Local dev
 

@@ -73,7 +73,7 @@ Idempotent (safe to re-run; each step skips if already done):
 4. backend: `systemctl enable --now inbox-backend` (start.sh reports if the
    unit isn't installed; it does not reinstall paths)
 5. cloud  : report cloudflared running/not (owner manages)
-6. health : poll /api/health, report status
+6. health : poll GET /api/projects (readiness probe), report status
 ```
 
 - `deploy/nginx.conf` — serve SPA at `/` (try_files → index.html) + proxy
@@ -98,7 +98,7 @@ Idempotent (safe to re-run; each step skips if already done):
       — without it `/api/chat` WebSocket fails while REST works).
 - [ ] systemd unit installed: `deploy/inbox-backend.service` copied with real
       paths (`/etc/systemd/system/`), `daemon-reload`, `enable --now`, and
-      `curl /api/health` green.
+      `curl /api/projects` green. (200 = backend + DB up)
 - [ ] cloudflared + Cloudflare Access: owner configures tunnel name, domain,
       email allowlist.
 

@@ -56,7 +56,7 @@ pnpm install                      # pnpm-workspace.yaml approves esbuild's build
 ### 1.3 Smoke-test the backend before systemd
 ```bash
 ./deploy/backend.sh               # foreground; Ctrl-C after test
-# 2nd SSH:  curl -s http://localhost:8787/api/health   -> {"ok":true}
+# 2nd SSH:  curl -s http://localhost:8787/api/projects   -> []   (200 = backend + DB up)
 ```
 
 ### 1.4 Install the systemd unit (paths + user + nvm PATH)
@@ -67,7 +67,7 @@ sudo sed -i "s|/path/to/inbox|$PWD|g" /etc/systemd/system/inbox-backend.service
 # (the committed unit ships with /home/pranav/.nvm/versions/node/v24.19.0/bin).
 sudo systemctl daemon-reload
 sudo systemctl enable --now inbox-backend
-curl -s http://localhost:8787/api/health          # {"ok":true}
+curl -s http://localhost:8787/api/projects          # []  (200 = backend + DB up)
 ```
 
 ### 1.5 Bring up nginx + everything
@@ -78,13 +78,13 @@ bash deploy/start.sh              # builds dist/, installs nginx.conf on :8085,
 
 ### 1.6 Verify
 ```bash
-curl -s  http://127.0.0.1:8085/api/health          # {"ok":true}
+curl -s  http://127.0.0.1:8085/api/projects          # []  (readiness probe)
 curl -sI http://127.0.0.1:8085/ | head -1          # HTTP/1.1 200 (SPA)
 curl -s  http://127.0.0.1:8085/ | head -3         # <!doctype html> ...
 # WS upgrade through nginx:
 curl -sI -H "Connection: Upgrade" -H "Upgrade: websocket" \
      -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: SGVsbG8=" \
-     http://127.0.0.1:8085/api/health             # expect 101 / Upgrade header
+     http://127.0.0.1:8085/api/chat/ws-probe         # expect 101 / Upgrade header
 sudo nginx -T | grep -A3 connection_upgrade      # map is live
 ```
 

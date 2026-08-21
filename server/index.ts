@@ -11,7 +11,7 @@
 //
 // Note the ordering contract from routes/chat.ts: createChatRouter returns
 // { app, injectWebSocket }, and injectWebSocket(server) MUST be called after serve().
-// We mount the REST routers + /api/health onto the same Hono `app` that the chat
+// We mount the REST routers onto the same Hono `app` that the chat
 // router built, so the node-ws upgrade handler is registered on the exact app
 // instance that gets served.
 
@@ -34,8 +34,8 @@ export interface AppDeps {
 }
 
 /**
- * Build the Hono app: mount /api/projects, /api/sessions, /api/inbox, /api/chat and
- * /api/health. Returns the app plus the WS injector (from the chat router), which the
+ * Build the Hono app: mount /api/projects, /api/sessions, /api/inbox, and /api/chat.
+ * Returns the app plus the WS injector (from the chat router), which the
  * caller MUST invoke after serve().
  */
 export function buildApp(deps: AppDeps): { app: Hono; injectWebSocket: (server: ServerType) => void } {
@@ -51,8 +51,6 @@ export function buildApp(deps: AppDeps): { app: Hono; injectWebSocket: (server: 
   // Build the chat router first — its `app` carries the node-ws upgrade handler, so we
   // keep THAT instance as the root app and mount the REST routers onto it.
   const { app, injectWebSocket } = createChatRouter({ store, manager, projectDirFor });
-
-  app.get("/api/health", (c) => c.json({ ok: true }));
 
   app.route("/", createProjectsRouter(store));
   app.route("/", createSessionsRouter(store));

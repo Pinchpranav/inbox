@@ -35,7 +35,10 @@ BACKEND="${INBOX_BACKEND:-localhost:8787}"
 # Our nginx listens on a free loopback port (not :80, which Coolify owns here).
 # Override with INBOX_LISTEN in deploy/.env if 8085 is taken on the box.
 LISTEN="${INBOX_LISTEN:-127.0.0.1:8085}"
-HEALTH="http://$BACKEND/api/health"
+# Readiness probe: a real DB-backed read. 200 only when the backend + store are up
+# (a broken store makes GET /api/projects throw -> 500, so this is stricter than a
+# hardcoded {ok:true}).
+HEALTH="http://$BACKEND/api/projects"
 
 echo "==>[1/6] deps (if missing)"
 [ -d node_modules ] || pnpm install

@@ -18,7 +18,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
-# Load secrets (gitignored deploy/.env: OLLAMA_API_KEY + optional overrides).
+# Load secrets (gitignored deploy/.env: COMMANDCODE_API_KEY + optional overrides).
 [ -f deploy/.env ] && { set -a; . deploy/.env; set +a; }
 
 echo "[inbox-backend] starting at $(date '+%Y-%m-%d %H:%M:%S') (pid $$)"

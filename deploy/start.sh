@@ -65,7 +65,11 @@ echo "==>[4/6] ensuring the backend systemd service is running"
 SERVICE="inbox-backend.service"
 if command -v systemctl >/dev/null 2>&1; then
   if $SUDO systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
-    echo "  $SERVICE already active — skipping"
+    # Already active — but we just pulled new code, so restart to pick it up.
+    # (This was the silent trap: skipping here left the OLD backend running.)
+    echo "  $SERVICE active — restarting to pick up new code"
+    $SUDO systemctl restart "$SERVICE" \
+      || echo "  ! restart failed — check: journalctl -u inbox-backend -f" >&2
   elif $SUDO systemctl enable --now "$SERVICE" 2>/dev/null; then
     echo "  enabled + started $SERVICE"
   else

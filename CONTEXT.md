@@ -36,7 +36,7 @@ ready.
   in a herdr pane, and reports status. Cloudflare tunnel/access is managed
   separately by the owner.
 - **Milestone:** one real conversation streaming end-to-end through the UI on
-  ollama-cloud, no OpenClaw — reached.
+  command-code, no OpenClaw — reached.
 
 ## Quick commands
 
@@ -47,6 +47,6 @@ bd update --claim <id>   # mark in progress
 bd close <id>     # done, next becomes ready
 
 # run locally
-npx tsx server/index.ts   # backend on :8787 (needs OLLAMA_API_KEY for chat)
+npx tsx server/index.ts   # backend on :8787 (needs COMMANDCODE_API_KEY for chat)
 pnpm dev                  # frontend on :5174 (proxies /api -> :8787)
 ```

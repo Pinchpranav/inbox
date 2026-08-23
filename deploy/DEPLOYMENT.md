@@ -49,7 +49,7 @@ sudo apt update && sudo apt install -y nginx
 git clone https://github.com/Pinchpranav/inbox.git
 cd inbox
 cp deploy/.env.example deploy/.env
-nano deploy/.env                  # paste OLLAMA_API_KEY
+nano deploy/.env                  # paste COMMANDCODE_API_KEY
 pnpm install                      # pnpm-workspace.yaml approves esbuild's build script
 ```
 
@@ -127,7 +127,7 @@ Cloudflare Access with your email allowlist. Done.
 - `deploy/backend.sh` — single-shot `exec ./node_modules/.bin/tsx server/index.ts` launcher (no while-loop; sources `deploy/.env`).
 - `deploy/inbox-backend.service` — systemd unit (User, WorkingDirectory, ExecStart, nvm PATH, Restart=on-failure).
 - `deploy/nginx.conf` — SPA + `/api` proxy + WS `map`; `__DIST__`/`__BACKEND__`/`__LISTEN__` substituted by start.sh.
-- `deploy/.env` — gitignored secrets (`OLLAMA_API_KEY`).
+- `deploy/.env` — gitignored secrets (`COMMANDCODE_API_KEY`).
 - `pnpm-workspace.yaml` — pnpm v11 `allowBuilds` (esbuild/genai/protobufjs).
 
 ## 4. Ops cheat-sheet
@@ -136,5 +136,10 @@ Cloudflare Access with your email allowlist. Done.
 systemctl status inbox-backend          # is the backend up?
 journalctl -u inbox-backend -f          # follow backend output (like tmux attach)
 sudo nginx -t && sudo nginx -s reload  # after editing nginx config
-bash deploy/start.sh                   # re-run anything (idempotent)
+bash deploy/start.sh                   # deploy new code (build, nginx, RESTART backend)
 ```
+
+> **start.sh now restarts the backend on every run.** Earlier versions skipped the
+> restart when the service was already active — after a `git pull` you had to run
+> `sudo systemctl restart inbox-backend` manually or the OLD code kept serving.
+> That trap is fixed: step 4/6 restarts the service when it is active.

@@ -1,11 +1,11 @@
-// commandCode.ts — vendored Command Code provider DATA (constants only).
+// commandCode.ts — vendored Command Code provider data + catalog (constants, fetch, cache).
 //
-// SCOPE (build-gw6.1): the static/constant parts of pi-commandcode-provider
-// (MIT, https://github.com/patlux/pi-commandcode-provider, v0.5.1) — the model
-// input modalities, reasoning efforts, thinking-level map, and pricing tables.
-// Zero dependencies, zero network, zero file I/O. The catalog FETCH + cache
-// (live refresh, 10s cooldown, commandcode-models.json) is a SEPARATE module
-// step (build-gw6.2) and is NOT here.
+// SCOPE: the data/static parts of pi-commandcode-provider
+// (MIT, https://github.com/patlux/pi-commandcode-provider, v0.5.1): model
+// input modalities, reasoning efforts, thinking-level map, pricing tables
+// (gw6.1), plus the catalog FETCH + file cache (gw6.2: live refresh, atomic
+// cache file, coalesced refresh, cooldown). NO streaming, NO auth, NO
+// extension — those land in the piSession wiring step (gw6.4).
 //
 // Source of truth: command-code@1.15.1 bundled catalog + Command Code docs
 // pricing (https://commandcode.ai/docs/resources/pricing-limits), as snapshotted
@@ -16,6 +16,9 @@
 //   - a single `COMMAND_CODE` namespace object (index.ts / tests import one flat)
 //
 // MIT License, Copyright (c) 2025 Pat Woz — vendored with attribution.
+
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 // ── Public model shape ─────────────────────────────────────────────
 
@@ -78,6 +81,14 @@ export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCod
 };
 
 const TEXT_INPUT_ONLY: readonly CommandCodeInputType[] = ["text"];
+
+/**
+ * Whether a model id is a known reasoning model (has a MODEL_EFFORTS entry).
+ * Internal — used to derive `reasoning` when parsing API/cache entries.
+ */
+function isReasoningModel(modelId: string): boolean {
+  return MODEL_EFFORTS[modelId] !== undefined;
+}
 
 /** Modalities a model accepts. Unknown/new models default to text-only. */
 export function inputModalitiesForModel(modelId: string): readonly CommandCodeInputType[] {
@@ -410,6 +421,353 @@ export const TEMPORARY_PRICING: readonly TemporaryPricing[] = [
   },
 ];
 
+// ── Model catalog: fetch + cache (build-gw6.2) ─────────────────────
+
+/** Default Command Code provider models endpoint. */
+export const DEFAULT_MODELS_URL = "https://api.commandcode.ai/provider/v1/models";
+
+/** Default timeout for a models fetch (ms). */
+export const DEFAULT_MODELS_TIMEOUT_MS = 10_000;
+
+/** Cap on maxTokens we advertise per model (the API returns only contextLength). */
+const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
+
+/** Cache file format version — bump to invalidate old caches. */
+const MODEL_CACHE_VERSION = 1;
+
+/** Cooldown between network refreshes (ms) — the catalog is stable, 10s is plenty. */
+export const REFRESH_COOLDOWN_MS = 10_000;
+
+interface ApiModel {
+  id: string;
+  name: string;
+  contextLength: number;
+}
+
+export interface FetchCommandCodeModelsOptions {
+  url?: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface LoadCommandCodeModelsOptions extends FetchCommandCodeModelsOptions {
+  /** Absolute path to the cache file (e.g. <agentDir>/commandcode-models.json). */
+  cachePath: string;
+}
+
+/**
+ * Result of loading the catalog. `source` tells the caller whether the models
+ * came from the live API, the local cache (live failed), or nothing at all.
+ * `warning` is human-readable and non-fatal (callers log it, they don't throw).
+ */
+export interface LoadCommandCodeModelsResult {
+  models: readonly CommandCodeModel[];
+  source: "live" | "cache" | "empty";
+  warning?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`Expected ${key} to be a non-empty string`);
+  }
+  return value;
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean {
+  const value = record[key];
+  if (typeof value !== "boolean") throw new Error(`Expected ${key} to be a boolean`);
+  return value;
+}
+
+function positiveNumberField(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`Expected ${key} to be a positive number`);
+  }
+  return value;
+}
+
+function parseApiModel(value: unknown): ApiModel {
+  if (!isRecord(value)) throw new Error("Expected model entry to be an object");
+  return {
+    id: stringField(value, "id"),
+    name: stringField(value, "name"),
+    contextLength: positiveNumberField(value, "context_length"),
+  };
+}
+
+function parseCachedModel(value: unknown): CommandCodeModel {
+  if (!isRecord(value)) throw new Error("Expected cached model entry to be an object");
+
+  const id = stringField(value, "id");
+  booleanField(value, "reasoning");
+  return {
+    id,
+    name: stringField(value, "name"),
+    // trust our static table, not the cached flag (cache may be older than the table)
+    reasoning: isReasoningModel(id),
+    contextWindow: positiveNumberField(value, "contextWindow"),
+    maxTokens: positiveNumberField(value, "maxTokens"),
+  };
+}
+
+function requireModels(models: readonly CommandCodeModel[]): readonly CommandCodeModel[] {
+  if (models.length === 0) throw new Error("Command Code returned an empty model catalog");
+  return models;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function abortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  return new DOMException("The operation was aborted", "AbortError");
+}
+
+function configuredTimeoutMs(timeoutMs: number | undefined): number {
+  return timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_MODELS_TIMEOUT_MS;
+}
+
+/** COMMANDCODE_MODELS_TIMEOUT_MS env override, else 10s. */
+export function getModelsTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.COMMANDCODE_MODELS_TIMEOUT_MS;
+  if (!raw) return DEFAULT_MODELS_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return configuredTimeoutMs(parsed);
+}
+
+class ModelDiscoveryTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Command Code model discovery timed out after ${timeoutMs}ms`);
+    this.name = "ModelDiscoveryTimeoutError";
+  }
+}
+
+/**
+ * Run `operation` with an internal AbortController that fires when
+ * `timeoutMs` elapses or `externalSignal` aborts (whichever first).
+ * The internal signal is aborted with the timeout error so fetch() rejects.
+ */
+function runWithTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  externalSignal: AbortSignal | undefined,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
+  let onExternalAbort: (() => void) | undefined;
+
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onExternalAbort && externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
+    };
+
+    const resolveOnce = (value: T) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const rejectOnce = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+
+    const abort = (reason: unknown) => {
+      const error = abortError(reason);
+      controller.abort(error);
+      rejectOnce(error);
+    };
+
+    if (externalSignal?.aborted) {
+      abort(externalSignal.reason);
+      return;
+    }
+
+    onExternalAbort = () => abort(externalSignal?.reason);
+    externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+    timer = setTimeout(() => abort(new ModelDiscoveryTimeoutError(timeoutMs)), timeoutMs);
+
+    Promise.resolve()
+      .then(() => operation(controller.signal))
+      .then(resolveOnce, rejectOnce);
+  });
+}
+
+/**
+ * Validate a raw /models API response (`{ object: "list", data: [...] }`)
+ * into CommandCodeModel[]. Throws on malformed payloads.
+ */
+export function commandCodeModelsFromApiResponse(value: unknown): readonly CommandCodeModel[] {
+  if (!isRecord(value)) throw new Error("Expected models response to be an object");
+  if (value.object !== "list") throw new Error("Expected models response object to be 'list'");
+
+  const data = value.data;
+  if (!Array.isArray(data)) throw new Error("Expected models response data to be an array");
+
+  return data.map(parseApiModel).map((model) => ({
+    id: model.id,
+    name: `${model.name} (CC)`,
+    reasoning: isReasoningModel(model.id),
+    contextWindow: model.contextLength,
+    maxTokens: Math.min(model.contextLength, DEFAULT_MAX_OUTPUT_TOKENS),
+  }));
+}
+
+/** Validate a cache file payload (`{ version, models }`) into CommandCodeModel[]. */
+export function commandCodeModelsFromCache(value: unknown): readonly CommandCodeModel[] {
+  if (!isRecord(value)) throw new Error("Expected model cache to be an object");
+  if (value.version !== MODEL_CACHE_VERSION) {
+    throw new Error(`Expected model cache version ${MODEL_CACHE_VERSION}`);
+  }
+  if (!Array.isArray(value.models)) throw new Error("Expected cached models to be an array");
+
+  return requireModels(value.models.map(parseCachedModel));
+}
+
+/**
+ * GET /provider/v1/models with a 10s timeout + abort support. Returns the
+ * validated catalog. Throws on HTTP errors, malformed bodies, or timeout.
+ */
+export async function fetchCommandCodeModels(
+  options: FetchCommandCodeModelsOptions = {},
+): Promise<readonly CommandCodeModel[]> {
+  const url = options.url ?? DEFAULT_MODELS_URL;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const body: unknown = await runWithTimeout(
+    async (signal) => {
+      const response = await fetchImpl(url, {
+        headers: { accept: "application/json" },
+        signal,
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch Command Code models: ${response.status} ${response.statusText}`,
+        );
+      }
+      return await response.json();
+    },
+    configuredTimeoutMs(options.timeoutMs),
+    options.signal,
+  );
+  return requireModels(commandCodeModelsFromApiResponse(body));
+}
+
+async function readCommandCodeModelsCache(cachePath: string): Promise<readonly CommandCodeModel[]> {
+  const contents = await readFile(cachePath, "utf-8");
+  const parsed: unknown = JSON.parse(contents);
+  return commandCodeModelsFromCache(parsed);
+}
+
+/**
+ * ATOMIC cache write: write to a temp file in the same dir, fsync-free,
+ * then rename() over the target. rename() is atomic on the same filesystem,
+ * so readers never see a half-written JSON (they see either the old file
+ * or the new one). Temp file is cleaned up even if the write throws.
+ * Mode 0o600 so the catalog (model ids/names) stays user-only.
+ */
+async function writeCommandCodeModelsCache(
+  cachePath: string,
+  models: readonly CommandCodeModel[],
+): Promise<void> {
+  await mkdir(dirname(cachePath), { recursive: true });
+  const temporaryPath = `${cachePath}.${process.pid}.tmp`;
+
+  try {
+    await writeFile(
+      temporaryPath,
+      `${JSON.stringify({ version: MODEL_CACHE_VERSION, models }, null, 2)}\n`,
+      { encoding: "utf-8", mode: 0o600 },
+    );
+    await rename(temporaryPath, cachePath);
+  } finally {
+    try {
+      await rm(temporaryPath, { force: true });
+    } catch {
+      // Best-effort cleanup must not hide the original cache write error.
+    }
+  }
+}
+
+/**
+ * Load the catalog: try the live API, fall back to the cache file, else empty.
+ * Live failures degrade gracefully: cache gives a warning, empty gives one too.
+ */
+export async function loadCommandCodeModels(
+  options: LoadCommandCodeModelsOptions,
+): Promise<LoadCommandCodeModelsResult> {
+  const cachePath = options.cachePath;
+
+  try {
+    const models = await fetchCommandCodeModels(options);
+
+    try {
+      await writeCommandCodeModelsCache(cachePath, models);
+      return { models, source: "live" };
+    } catch (error) {
+      return {
+        models,
+        source: "live",
+        warning: `Loaded the live Command Code model catalog but could not update ${cachePath}: ${errorMessage(error)}`,
+      };
+    }
+  } catch (liveError) {
+    if (options.signal?.aborted) throw abortError(options.signal.reason ?? liveError);
+
+    try {
+      const models = await readCommandCodeModelsCache(cachePath);
+      return {
+        models,
+        source: "cache",
+        warning: `Could not refresh the Command Code model catalog (${errorMessage(liveError)}). Using the cached catalog from ${cachePath}.`,
+      };
+    } catch (cacheError) {
+      return {
+        models: [],
+        source: "empty",
+        warning: `Could not refresh the Command Code model catalog (${errorMessage(liveError)}), and no valid cached catalog is available at ${cachePath} (${errorMessage(cacheError)}). Command Code models will remain unavailable until a refresh succeeds.`,
+      };
+    }
+  }
+}
+
+/**
+ * COALESCED refresh: if a refresh is already in flight, return THE SAME
+ * promise so concurrent callers share one network request instead of N.
+ * When the shared promise settles it is cleared, so a LATER call starts fresh.
+ */
+export function coalescedRefresh(
+  cachePath: string,
+  options: FetchCommandCodeModelsOptions = {},
+): Promise<LoadCommandCodeModelsResult> {
+  if (!refreshInFlight) {
+    refreshInFlight = loadCommandCodeModels({ cachePath, ...options }).finally(() => {
+      if (refreshInFlight === inFlightPromise) refreshInFlight = undefined;
+    });
+  }
+  return refreshInFlight;
+}
+
+// module-level shared state for coalescedRefresh
+let refreshInFlight: Promise<LoadCommandCodeModelsResult> | undefined;
+let inFlightPromise: Promise<LoadCommandCodeModelsResult> | undefined;
+
 // ── Single namespace export ────────────────────────────────────────
 
 /** Flat namespace so index.ts / tests can import one object. */
@@ -422,4 +780,13 @@ export const COMMAND_CODE = {
   ZERO_MODEL_COST,
   PRICING_SOURCE_URL,
   PRICING_LAST_VERIFIED,
+  DEFAULT_MODELS_URL,
+  DEFAULT_MODELS_TIMEOUT_MS,
+  REFRESH_COOLDOWN_MS,
+  fetchCommandCodeModels,
+  loadCommandCodeModels,
+  coalescedRefresh,
+  commandCodeModelsFromApiResponse,
+  commandCodeModelsFromCache,
+  getModelsTimeoutMs,
 } as const;

@@ -4,6 +4,23 @@ import { stateLabel, type Message, type Session } from "../data/mock";
 import ThemeToggle from "./ThemeToggle.vue";
 import MarkdownView from "./MarkdownView.vue";
 
+// Global ZDR (zero data retention) toggle state — provider-wide, not per-session.
+const zdrOn = ref(true);
+
+async function toggleZdr() {
+  const next = !zdrOn.value;
+  zdrOn.value = next; // optimistic
+  try {
+    await fetch("/api/sessions/zdr", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ zdr: next }),
+    });
+  } catch {
+    zdrOn.value = !next; // rollback on failure
+  }
+}
+
 const props = defineProps<{
   session: Session | null;
   projectName: string;
@@ -102,6 +119,15 @@ watch(
           <span v-if="session.noInbox" class="noinbox">noInbox</span>
         </span>
       </div>
+      <!-- Global ZDR toggle: ● = zero data retention on (x-cmd-zdr: 1 sent), o = off -->
+      <button
+        class="zdr-toggle"
+        :class="{ on: zdrOn }"
+        @click="toggleZdr"
+        :title="zdrOn ? 'ZDR on — zero data retention' : 'ZDR off'"
+      >
+        ZDR {{ zdrOn ? "●" : "o" }}
+      </button>
       <ThemeToggle />
     </header>
 

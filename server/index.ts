@@ -53,7 +53,7 @@ export function buildApp(deps: AppDeps): { app: Hono; injectWebSocket: (server: 
   const { app, injectWebSocket } = createChatRouter({ store, manager, projectDirFor });
 
   app.route("/", createProjectsRouter(store));
-  app.route("/", createSessionsRouter(store));
+  app.route("/", createSessionsRouter(store, manager));
   app.route("/", createInboxRouter(store));
 
   return { app, injectWebSocket };

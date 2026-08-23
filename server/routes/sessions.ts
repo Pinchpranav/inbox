@@ -11,6 +11,7 @@
 
 import { Hono } from "hono";
 import type { StateStore, Session, State } from "../stateStore.ts";
+import type { PiSessionManager } from "../piSession.ts";
 
 const STATES: readonly State[] = ["active", "deferred", "done"];
 
@@ -29,7 +30,7 @@ function threadOfKey(key: string): string {
   return parts.slice(2).join(":");
 }
 
-export function createSessionsRouter(store: StateStore): Hono {
+export function createSessionsRouter(store: StateStore, manager: PiSessionManager): Hono {
   const app = new Hono();
 
   // GET /api/sessions/:key/messages — reload transcript (not the live stream).
@@ -106,6 +107,14 @@ export function createSessionsRouter(store: StateStore): Hono {
     };
     store.write({ type: "session.created", payload: { session } });
     return c.json({ ok: true, session: { key: newKey } });
+  });
+
+  // POST /api/sessions/zdr — global ZDR toggle (x-cmd-zdr: 1 on every request).
+  // No validation beyond the boolean: the UI is the only caller.
+  app.post("/api/sessions/zdr", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { zdr?: unknown } | null;
+    await manager.setZdr(body?.zdr === true);
+    return c.json({ ok: true });
   });
 
   return app;

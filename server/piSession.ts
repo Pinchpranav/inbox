@@ -7,6 +7,11 @@
 //     prompt has context (session.agent.state.messages = restored messages)
 //   - isolated: custom agentDir so we never touch ~/.pi/agent
 //
+// Provider: Command Code (command-code). Models are fetched live at startup
+// (fetchModels, in-memory, no fallback); the default model is deepseek-v4-flash.
+// ZDR (zero data retention) is a GLOBAL toggle: when on, every request carries
+// the x-cmd-zdr: 1 header (re-registers the provider — no restart needed).
+//
 // The relay (relay.ts) handles event capture + persistence; it subscribes to
 // the session this manager opens.
 //
@@ -18,6 +23,8 @@
 //     const handle = await manager.open(sessionKey, projectDir)  // per prompt
 //     const relay = attachAssistantRelay(store, key, handle.session)
 //     await handle.session.prompt(text)
+//   routes/sessions.ts (ZDR):
+//     POST /api/sessions/zdr → manager.setZdr(bool) → re-register provider
 //   The manager holds one AgentSession per conversation key in `handles`.
 import {
   createAgentSession,
@@ -25,9 +32,11 @@ import {
   SessionManager,
   DefaultResourceLoader,
 } from "@earendil-works/pi-coding-agent";
-import { GENERATED_MODELS } from "pi-ollama-cloud/models.generated.ts";
-import { OLLAMA_BASE, refreshOllamaCatalog } from "pi-ollama-cloud/models.ts";
 import type { StateStore, Message } from "./stateStore.ts";
+import { fetchModels, inputModalitiesForModel, thinkingMetadataForModel, type CommandCodeModel } from "./commandCode.ts";
+
+/** Command Code Provider API base (OpenAI-compatible). Env override for tests. */
+const COMMANDCODE_API_BASE = process.env.COMMANDCODE_API_BASE ?? "https://api.commandcode.ai/provider/v1";
 
 /**
  * What open() returns. Consumed by chat.ts (and relay.ts, which subscribes to
@@ -84,19 +93,19 @@ export class PiSessionManager {
   private handles = new Map<string, SessionHandle>();
   private modelProvider: string;
   private modelId: string;
+  /** Global ZDR (zero data retention) state. On by default. */
+  private zdrEnabled = true;
 
   private constructor(store: StateStore, private opts: PiSessionManagerOpts) {
     this.store = store;
-    this.modelProvider = opts.modelProvider ?? "ollama-cloud";
-    // Model id must match an entry in GENERATED_MODELS (pi-ollama-cloud).
-    // "deepseek-v4-flash:cloud" does NOT exist — the "cloud" bit is the provider,
-    // not the model. Options: deepseek-v4-flash:0731 | deepseek-v4-flash:preview | deepseek-v4-pro
-    this.modelId = opts.modelId ?? "deepseek-v4-flash:0731";
+    this.modelProvider = opts.modelProvider ?? "command-code";
+    // Must match a live Command Code model id (e.g. "deepseek/deepseek-v4-flash").
+    this.modelId = opts.modelId ?? "deepseek/deepseek-v4-flash";
   }
 
   /**
    * Factory. Called once by index.ts at startup. Runs init() to register the
-   * ollama-cloud provider + credential and build the resource loader.
+   * command-code provider + credential and build the resource loader.
    */
   static async create(store: StateStore, opts: PiSessionManagerOpts): Promise<PiSessionManager> {
     const m = new PiSessionManager(store, opts);
@@ -105,24 +114,64 @@ export class PiSessionManager {
   }
 
   /**
-   * Register the ollama-cloud provider + credential once, per process.
+   * Register the command-code provider + credential once, per process.
    * Internal — called by create(). Must run BEFORE any session is created
    * (model selection happens before extensions bind).
    */
   private async init() {
     this.modelRuntime = await ModelRuntime.create();
-    this.modelRuntime.registerProvider("ollama-cloud", {
-      name: "Ollama Cloud",
-      baseUrl: `${OLLAMA_BASE}/v1`,
-      apiKey: "",
-      api: "openai-completions",
-      models: GENERATED_MODELS,
-      refreshModels: refreshOllamaCatalog,
-    });
-    await this.modelRuntime.setRuntimeApiKey("ollama-cloud", process.env.OLLAMA_API_KEY ?? "");
+    await this.registerCommandCode();
+    await this.modelRuntime.setRuntimeApiKey("command-code", process.env.COMMANDCODE_API_KEY ?? "");
 
     this.loader = new DefaultResourceLoader({ agentDir: this.opts.agentDir, cwd: this.opts.cwd });
     await this.loader.reload();
+  }
+
+  /**
+   * (Re-)register the command-code provider with the live model catalog.
+   * The ZDR header is a provider-level header (like the upstream extension's
+   * COMMANDCODE_ZDR=1), so toggling ZDR just re-registers — the runtime merges
+   * over the previous config and keeps the apiKey.
+   */
+  private async registerCommandCode() {
+    let models: CommandCodeModel[] = [];
+    try {
+      models = await fetchModels({ url: `${COMMANDCODE_API_BASE}/models` });
+    } catch (err) {
+      console.error("[command-code] model fetch failed:", err);
+    }
+    this.modelRuntime.registerProvider("command-code", {
+      name: "Command Code",
+      baseUrl: COMMANDCODE_API_BASE,
+      apiKey: "",
+      api: "openai-completions",
+      headers: this.zdrEnabled ? { "x-cmd-zdr": "1" } : undefined,
+      models: models.map((m) => ({
+        id: m.id,
+        name: m.name,
+        reasoning: m.reasoning,
+        ...(thinkingMetadataForModel(m.id) ?? {}),
+        input: [...inputModalitiesForModel(m.id)],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+      })),
+    });
+  }
+
+  /**
+   * Global ZDR toggle. When on, every request carries x-cmd-zdr: 1
+   * (zero data retention). Re-registers the provider so the change applies
+   * to the next request — no restart needed.
+   */
+  async setZdr(enabled: boolean) {
+    this.zdrEnabled = enabled;
+    await this.registerCommandCode();
+  }
+
+  /** Current global ZDR state (for the UI). */
+  getZdr(): boolean {
+    return this.zdrEnabled;
   }
 
   /**

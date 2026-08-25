@@ -71,6 +71,51 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     return c.json({ ok: true });
   });
 
+  // GET /api/models — the catalog for the composer picker (build-gw6.5.1).
+  // {id, name, thinkingLevelMap, input}; thinkingLevelMap undefined = no reasoning.
+  app.get("/api/models", (c) => {
+    return c.json(manager.getModels());
+  });
+
+  // PATCH /api/sessions/:key/model — persist the chosen model (event-sourced).
+  app.patch("/api/sessions/:key/model", async (c) => {
+    const sessionKey = c.req.param("key");
+    let body: { model?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    if (typeof body.model !== "string" || !body.model) {
+      return c.json({ ok: false, error: "model must be a non-empty string" }, 400);
+    }
+    if (!manager.getModels().some((m) => m.id === body.model)) {
+      return c.json({ ok: false, error: "unknown model id" }, 400);
+    }
+    store.write({ type: "session.model", payload: { sessionKey, modelId: body.model } });
+    return c.json({ ok: true });
+  });
+
+  // PATCH /api/sessions/:key/thinking — persist the chosen thinking level (event-sourced).
+  app.patch("/api/sessions/:key/thinking", async (c) => {
+    const sessionKey = c.req.param("key");
+    let body: { level?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ ok: false, error: "invalid JSON body" }, 400);
+    }
+    if (typeof body.level !== "string" || !body.level) {
+      return c.json({ ok: false, error: "level must be a non-empty string" }, 400);
+    }
+    const valid = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    if (!valid.includes(body.level)) {
+      return c.json({ ok: false, error: "invalid thinking level" }, 400);
+    }
+    store.write({ type: "session.thinking", payload: { sessionKey, level: body.level } });
+    return c.json({ ok: true });
+  });
+
   // POST /api/sessions/:key/move — re-home a conversation under a new project.
   // Transcript kept (old messages stay under the old key); memory resets (new key/thread).
   app.post("/api/sessions/:key/move", async (c) => {

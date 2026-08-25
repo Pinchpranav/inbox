@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { stateLabel, type Session, type State } from "../data/mock";
+import { stateLabel, type Session, type State } from "../data/domain";
 
 const props = defineProps<{
   s: Session;

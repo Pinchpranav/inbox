@@ -17,12 +17,25 @@ export interface Session {
   state: State;
   noInbox: boolean;
   updatedAt: number; // ms epoch
+  /** Selected model slug (build-gw6.5.1). null = backend default. */
+  modelId?: string | null;
+  /** Selected thinking level (build-gw6.5.1). null = "off". */
+  thinkingLevel?: string | null;
 }
 
 export interface Message {
   id: string;
   role: "user" | "assistant";
   text: string;
+}
+
+/** A model as returned by GET /api/models (build-gw6.5.1). */
+export interface ModelEntry {
+  id: string;
+  name: string;
+  /** undefined = model does not reason (no thinking levels). */
+  thinkingLevelMap: Record<string, string | null> | undefined;
+  input: string[];
 }
 
 const HOUR = 60 * 60 * 1000;

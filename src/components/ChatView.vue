@@ -1,25 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { stateLabel, type Message, type Session } from "../data/mock";
+import { stateLabel, type Message, type Session, type ModelEntry } from "../data/domain";
 import ThemeToggle from "./ThemeToggle.vue";
 import MarkdownView from "./MarkdownView.vue";
-
-// Global ZDR (zero data retention) toggle state — provider-wide, not per-session.
-const zdrOn = ref(true);
-
-async function toggleZdr() {
-  const next = !zdrOn.value;
-  zdrOn.value = next; // optimistic
-  try {
-    await fetch("/api/sessions/zdr", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ zdr: next }),
-    });
-  } catch {
-    zdrOn.value = !next; // rollback on failure
-  }
-}
+import Composer from "./Composer.vue";
 
 const props = defineProps<{
   session: Session | null;
@@ -29,11 +13,13 @@ const props = defineProps<{
   phase: string | null;
   streaming: boolean;
   sidebarCollapsed: boolean;
+  models: ModelEntry[];
+  modelId: string | null;
+  thinkingLevel: string | null;
 }>();
 
-const emit = defineEmits<{ send: [text: string]; abort: [] }>();
+const emit = defineEmits<{ send: [text: string]; abort: []; model: [id: string]; thinking: [level: string] }>();
 
-const draft = ref("");
 const scrollEl = ref<HTMLDivElement | null>(null);
 const autoFollow = ref(true);
 const showEnd = ref(false);
@@ -41,20 +27,6 @@ const showEnd = ref(false);
 const isEmptyThread = computed(
   () => !!props.session && props.messages.length === 0 && !props.liveText && !props.streaming,
 );
-
-function send() {
-  const text = draft.value.trim();
-  if (!text || props.streaming) return;
-  emit("send", text);
-  draft.value = "";
-}
-
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    send();
-  }
-}
 
 function onScroll() {
   const el = scrollEl.value;
@@ -119,15 +91,6 @@ watch(
           <span v-if="session.noInbox" class="noinbox">noInbox</span>
         </span>
       </div>
-      <!-- Global ZDR toggle: ● = zero data retention on (x-cmd-zdr: 1 sent), o = off -->
-      <button
-        class="zdr-toggle"
-        :class="{ on: zdrOn }"
-        @click="toggleZdr"
-        :title="zdrOn ? 'ZDR on — zero data retention' : 'ZDR off'"
-      >
-        ZDR {{ zdrOn ? "●" : "o" }}
-      </button>
       <ThemeToggle />
     </header>
 
@@ -165,18 +128,16 @@ watch(
       <button v-if="showEnd" class="scroll-end" @click="scrollToEnd">↓ Scroll to end</button>
 
       <!-- Composer -->
-      <footer class="composer">
-        <textarea
-          v-model="draft"
-          class="input"
-          :placeholder="streaming ? 'Generating…' : 'Message ' + projectName + '. Enter to send, Shift+Enter for newline.'"
-          :disabled="streaming"
-          rows="2"
-          @keydown="onKeydown"
-        />
-        <button v-if="!streaming" class="send" :disabled="!draft.trim()" @click="send">Send</button>
-        <button v-else class="stop" @click="$emit('abort')">Stop</button>
-      </footer>
+      <Composer
+        :models="models"
+        :model-id="modelId"
+        :thinking-level="thinkingLevel"
+        :streaming="streaming"
+        @send="emit('send', $event)"
+        @abort="emit('abort')"
+        @model="emit('model', $event)"
+        @thinking="emit('thinking', $event)"
+      />
     </div>
   </main>
 </template>
@@ -310,7 +271,7 @@ watch(
   padding: 20px 16px 8px;
 }
 .messages-inner {
-  max-width: 48rem;
+  max-width: 64rem;
   margin: 0 auto;
   display: flex;
   flex-direction: column;

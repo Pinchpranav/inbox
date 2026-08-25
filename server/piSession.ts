@@ -33,7 +33,7 @@ import {
   DefaultResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 import type { StateStore, Message } from "./stateStore.ts";
-import { fetchModels, inputModalitiesForModel, thinkingMetadataForModel, type CommandCodeModel } from "./commandCode.ts";
+import { fetchModels, inputModalitiesForModel, thinkingMetadataForModel, type CommandCodeModel, type ModelCatalogEntry } from "./commandCode.ts";
 
 /** Command Code Provider API base (OpenAI-compatible). Env override for tests. */
 const COMMANDCODE_API_BASE = process.env.COMMANDCODE_API_BASE ?? "https://api.commandcode.ai/provider/v1";
@@ -93,6 +93,8 @@ export class PiSessionManager {
   private handles = new Map<string, SessionHandle>();
   private modelProvider: string;
   private modelId: string;
+  /** Cached Command Code catalog (build-gw6.5.1): fetched once at startup so getModels() can serve it. */
+  private models: CommandCodeModel[] = [];
   /** Global ZDR (zero data retention) state. On by default. */
   private zdrEnabled = true;
 
@@ -140,6 +142,7 @@ export class PiSessionManager {
     } catch (err) {
       console.error("[command-code] model fetch failed:", err);
     }
+    this.models = models; // build-gw6.5.1: cache for getModels()
     this.modelRuntime.registerProvider("command-code", {
       name: "Command Code",
       baseUrl: COMMANDCODE_API_BASE,
@@ -175,12 +178,28 @@ export class PiSessionManager {
   }
 
   /**
-   * Resolve the configured model object from the runtime.
-   * Internal — used by open() when creating a session.
+   * The model catalog as served by GET /api/models (build-gw6.5.1). Pure composition
+   * over commandCode.ts helpers — no new model logic. `thinkingLevelMap` comes from the
+   * per-model hardcoded table (the API doesn't expose it); a model with no reasoning gets
+   * `undefined`. The separate `reasoning` boolean was dropped — "reasons?" is exactly
+   * "has a thinkingLevelMap?".
    */
-  private resolveModel(): ReturnType<ModelRuntime["getModel"]> {
-    const model = this.modelRuntime.getModel(this.modelProvider, this.modelId);
-    if (!model) throw new Error(`model not found: ${this.modelProvider}/${this.modelId}`);
+  getModels(): ModelCatalogEntry[] {
+    return this.models.map((m) => ({
+      id: m.id,
+      name: m.name,
+      thinkingLevelMap: thinkingMetadataForModel(m.id)?.thinkingLevelMap ?? undefined,
+      input: inputModalitiesForModel(m.id),
+    }));
+  }
+
+  /**
+   * Resolve the default model object from the runtime. Internal — used by open()
+   * when the stored model id is missing or no longer in the catalog.
+   */
+  private resolveModel(modelId: string): ReturnType<ModelRuntime["getModel"]> {
+    const model = this.modelRuntime.getModel(this.modelProvider, modelId);
+    if (!model) throw new Error(`model not found: ${this.modelProvider}/${modelId}`);
     return model;
   }
 
@@ -217,15 +236,28 @@ export class PiSessionManager {
     if (existing) return existing;
 
     const history = this.store.getMessages(sessionKey);
+    const stored = this.store.getSession(sessionKey);
+
+    // build-gw6.5.1: apply the stored model + thinking (fall back to manager defaults when
+    // null or no longer in the catalog). Applied on every open so a live, cached handle also
+    // picks up a picker change.
+    const modelId = stored?.modelId && this.models.some((m) => m.id === stored.modelId)
+      ? stored.modelId
+      : this.modelId;
+    const model = this.resolveModel(modelId);
 
     const { session } = await createAgentSession({
       modelRuntime: this.modelRuntime,
       resourceLoader: this.loader,
       sessionManager: SessionManager.inMemory(),
       cwd: projectDir,
-      model: this.resolveModel(),
+      model,
       tools: ["read", "bash", "write", "edit"], // main agent tools
     });
+
+    // Apply thinking level (off when unset). setThinkingLevel clamps to what the model supports.
+    const level = (stored?.thinkingLevel ?? "off") as Parameters<typeof session.setThinkingLevel>[0];
+    session.setThinkingLevel(level);
 
     // RESUME: seed prior conversation history so the next prompt has context
     if (history.length > 0) {

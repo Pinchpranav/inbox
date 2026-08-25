@@ -24,6 +24,19 @@ export interface CommandCodeModel {
   maxTokens: number;
 }
 
+/**
+ * A model as served to the UI by `GET /api/models` (build-gw6.5.1).
+ * `thinkingLevelMap` comes from the per-model hardcoded table (the live API
+ * does not expose it); `undefined` = this model does not reason. There is no
+ * separate `reasoning` boolean — "does it reason?" == "has a thinkingLevelMap?".
+ */
+export interface ModelCatalogEntry {
+  id: string;
+  name: string;
+  thinkingLevelMap: ThinkingMetadata["thinkingLevelMap"] | undefined;
+  input: readonly CommandCodeInputType[];
+}
+
 // ── Input modalities ───────────────────────────────────────────────
 
 export type CommandCodeInputType = "text" | "image";

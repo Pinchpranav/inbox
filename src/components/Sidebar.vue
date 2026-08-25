@@ -6,7 +6,7 @@ import {
   type Project,
   type Session,
   type State,
-} from "../data/mock";
+} from "../data/domain";
 import SessionRow from "./SessionRow.vue";
 
 const props = defineProps<{
@@ -16,6 +16,8 @@ const props = defineProps<{
   /** Gateway connection status shown as a small dot in the header. */
   conn?: "ok" | "loading" | "error" | "demo";
   connError?: string;
+  /** Global ZDR (zero data retention) state, owned by App.vue (build-gw6.5.1). */
+  zdr?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   "toggle-no-inbox": [key: string];
   "move-session": [key: string, destAgentId: string];
   "set-project-state": [agentId: string, state: State];
+  "toggle-zdr": [];
 }>();
 
 function connTitle(): string {
@@ -100,8 +103,18 @@ function onMove(s: Session) {
   <aside class="sidebar">
     <div class="head">
       <span class="conn-dot" :data-conn="conn ?? 'demo'" :title="connTitle()"></span>
-      <button class="gear-btn" title="Backend settings" @click="$emit('open-settings')">⚙</button>
-      <h1 class="brand">Threads</h1>
+      <button class="settings-btn" title="Backend settings" @click="$emit('open-settings')">⋯</button>
+      <div class="brand-wrap">
+        <h1 class="brand">Threads</h1>
+        <button
+          class="zdr-btn zdr-inline"
+          :class="{ on: zdr }"
+          :title="zdr ? 'ZDR on — zero data retention' : 'ZDR off'"
+          @click="$emit('toggle-zdr')"
+        >
+          ZDR {{ zdr ? '●' : 'o' }}
+        </button>
+      </div>
       <button class="collapse-btn" title="Collapse sidebar" @click="$emit('collapse')">«</button>
     </div>
 
@@ -227,6 +240,11 @@ function onMove(s: Session) {
   font-weight: 700;
   letter-spacing: -0.01em;
 }
+.brand-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
 .collapse-btn {
   position: absolute;
   right: 12px;
@@ -245,20 +263,50 @@ function onMove(s: Session) {
   border-color: var(--border-strong);
   background: var(--bg-soft-2);
 }
-.gear-btn {
+/* build-gw6.5.1: global ZDR toggle (replaces the chat-header button). */
+.zdr-btn {
+  position: absolute;
+  left: 66px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+.zdr-btn.on {
+  color: var(--state-active);
+  border-color: var(--state-active);
+}
+.zdr-btn:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.zdr-btn.zdr-inline {
+  position: static;
+  left: auto;
+  top: auto;
+  transform: none;
+}
+/* build-gw6.5.1: settings moved from the gear (⚙) to a small ⋯ by the conn dot. */
+.settings-btn {
   position: absolute;
   left: 40px;
   top: 50%;
   transform: translateY(-50%);
-  width: 28px;
+  width: 24px;
   height: 28px;
   border: 1px solid var(--border);
   border-radius: 7px;
   color: var(--text-soft);
-  font-size: 15px;
+  font-size: 17px;
   line-height: 1;
 }
-.gear-btn:hover {
+.settings-btn:hover {
   color: var(--text);
   border-color: var(--border-strong);
   background: var(--bg-soft-2);

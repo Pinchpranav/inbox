@@ -11,8 +11,9 @@ import {
   type Message,
   type Project,
   type Session,
+  type ModelEntry,
   type State,
-} from "./data/mock";
+} from "./data/domain";
 import {
   loadConfig,
   saveConfig,
@@ -40,6 +41,10 @@ const liveText = ref("");
 const phase = ref<string | null>(null);
 const streaming = ref(false);
 const historyLoading = ref(false);
+
+// build-gw6.5.1: model catalog (fetched once) + global ZDR toggle (owned here, sidebar renders it).
+const models = ref<ModelEntry[]>([]);
+const zdrOn = ref(true);
 
 // Mock-streaming timers (demo mode only).
 let phaseTimer: ReturnType<typeof setInterval> | null = null;
@@ -93,6 +98,8 @@ async function refresh() {
   } finally {
     refreshInFlight = false;
   }
+  // build-gw6.5.1: fetch the model catalog once (independent of the sidebar view).
+  void api.getModels().then((m) => (models.value = m)).catch(() => { /* demo mode: picker stays empty */ });
 }
 
 function pruneSelection() {
@@ -260,6 +267,50 @@ function setProjectState(agentId: string, state: State) {
       connError.value = err instanceof api.ApiError ? err.message : String(err);
       void refresh();
     });
+}
+
+// ── build-gw6.5.1: model + thinking (per-session) ─────────────────────────
+const selectedModelId = computed(() => selectedSession.value?.modelId ?? null);
+const selectedThinking = computed(() => selectedSession.value?.thinkingLevel ?? null);
+
+function onModel(id: string) {
+  const key = selectedKey.value;
+  if (!key) return;
+  const s = sessions.value.find((x) => x.key === key);
+  if (s) s.modelId = id; // optimistic
+  if (conn.value !== "ok") return;
+  void api.setSessionModel(key, id).catch((err) => {
+    connError.value = err instanceof api.ApiError ? err.message : String(err);
+    void refresh();
+  });
+}
+
+function onThinking(level: string) {
+  const key = selectedKey.value;
+  if (!key) return;
+  const s = sessions.value.find((x) => x.key === key);
+  if (s) s.thinkingLevel = level; // optimistic
+  if (conn.value !== "ok") return;
+  void api.setSessionThinking(key, level).catch((err) => {
+    connError.value = err instanceof api.ApiError ? err.message : String(err);
+    void refresh();
+  });
+}
+
+// ── build-gw6.5.1: global ZDR toggle (sidebar) ────────────────────────────
+async function toggleZdr() {
+  const next = !zdrOn.value;
+  zdrOn.value = next; // optimistic
+  if (conn.value !== "ok") return;
+  try {
+    await fetch("/api/sessions/zdr", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ zdr: next }),
+    });
+  } catch {
+    zdrOn.value = !next; // rollback on failure
+  }
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────
@@ -468,6 +519,7 @@ onUnmounted(() => {
       :selected-key="selectedKey"
       :conn="conn"
       :conn-error="connError"
+      :zdr="zdrOn"
       @select="selectSession"
       @collapse="sidebarCollapsed = true"
       @open-settings="settingsOpen = true"
@@ -477,6 +529,7 @@ onUnmounted(() => {
       @toggle-no-inbox="toggleNoInbox"
       @move-session="moveSession"
       @set-project-state="setProjectState"
+      @toggle-zdr="toggleZdr"
     />
     <button
       v-if="sidebarCollapsed"
@@ -492,8 +545,13 @@ onUnmounted(() => {
       :phase="phase"
       :streaming="streaming"
       :sidebar-collapsed="sidebarCollapsed"
+      :models="models"
+      :model-id="selectedModelId"
+      :thinking-level="selectedThinking"
       @send="send"
       @abort="abort"
+      @model="onModel"
+      @thinking="onThinking"
     />
     <SettingsModal
       :open="settingsOpen"

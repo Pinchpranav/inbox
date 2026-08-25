@@ -43,6 +43,10 @@ export interface Session {
   state: State;
   noInbox: boolean;
   lastTouchedAt: number | null;
+  /** Stored model slug (e.g. "deepseek/deepseek-v4-flash"). null → manager default. */
+  modelId?: string | null;
+  /** Stored thinking level (off|minimal|low|medium|high|xhigh|max). null → "off". */
+  thinkingLevel?: string | null;
 }
 
 /** One message in a conversation. Read by routes + piSession; written via write(). */
@@ -77,6 +81,8 @@ export type DomainEvent =
   | { type: "session.created"; payload: { session: Session } }
   | { type: "session.state"; payload: { sessionKey: string; state: State } }
   | { type: "session.noInbox"; payload: { sessionKey: string; noInbox: boolean } }
+  | { type: "session.model"; payload: { sessionKey: string; modelId: string } }
+  | { type: "session.thinking"; payload: { sessionKey: string; level: string } }
   | { type: "session.touched"; payload: { sessionKey: string } }
   | { type: "message.sent"; payload: { messageId: string; role: "user" | "assistant"; text: string; streaming?: boolean; sessionKey: string } };
 
@@ -128,7 +134,9 @@ export class StateStore {
         project_id     TEXT NOT NULL,
         state          TEXT NOT NULL,
         no_inbox       INTEGER NOT NULL DEFAULT 0,
-        last_touched_at INTEGER
+        last_touched_at INTEGER,
+        model_id       TEXT,
+        thinking_level TEXT
       );
 
       CREATE TABLE IF NOT EXISTS projection_messages (
@@ -147,6 +155,19 @@ export class StateStore {
         last_applied_sequence INTEGER NOT NULL
       );
     `);
+
+    // build-gw6.5.1: add per-session model + thinking columns to existing DBs.
+    // node:sqlite's SQLite build rejects `ADD COLUMN IF NOT EXISTS`, so guard each
+    // ALTER with a PRAGMA table_info check (adding an existing column is an error).
+    const existingCols = new Set(
+      (this.db.prepare("PRAGMA table_info(projection_sessions)").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    if (!existingCols.has("model_id")) {
+      this.db.exec("ALTER TABLE projection_sessions ADD COLUMN model_id TEXT");
+    }
+    if (!existingCols.has("thinking_level")) {
+      this.db.exec("ALTER TABLE projection_sessions ADD COLUMN thinking_level TEXT");
+    }
   }
 
   // ── Log (append) ─────────────────────────────────────────────────
@@ -219,6 +240,14 @@ export class StateStore {
       }
       case "session.noInbox": {
         this.db.prepare("UPDATE projection_sessions SET no_inbox = ? WHERE key = ?").run(p.noInbox ? 1 : 0, p.sessionKey as string);
+        return true;
+      }
+      case "session.model": {
+        this.db.prepare("UPDATE projection_sessions SET model_id = ? WHERE key = ?").run(p.modelId as string, p.sessionKey as string);
+        return true;
+      }
+      case "session.thinking": {
+        this.db.prepare("UPDATE projection_sessions SET thinking_level = ? WHERE key = ?").run(p.level as string, p.sessionKey as string);
         return true;
       }
       case "session.touched": {
@@ -357,13 +386,14 @@ export class StateStore {
   private upsertSession(s: Session) {
     this.db
       .prepare(
-        `INSERT INTO projection_sessions (key, name, project_id, state, no_inbox, last_touched_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO projection_sessions (key, name, project_id, state, no_inbox, last_touched_at, model_id, thinking_level)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET
            name = excluded.name, project_id = excluded.project_id,
-           state = excluded.state, no_inbox = excluded.no_inbox`,
+           state = excluded.state, no_inbox = excluded.no_inbox,
+           model_id = excluded.model_id, thinking_level = excluded.thinking_level`,
       )
-      .run(s.key, s.name, s.projectId, s.state, s.noInbox ? 1 : 0, s.lastTouchedAt ?? null);
+      .run(s.key, s.name, s.projectId, s.state, s.noInbox ? 1 : 0, s.lastTouchedAt ?? null, s.modelId ?? null, s.thinkingLevel ?? null);
   }
 
   // ── Read helpers ─────────────────────────────────────────────────
@@ -382,6 +412,25 @@ export class StateStore {
     })) as Project[];
   }
 
+  /**
+   * A single conversation by key. build-gw6.5.1: used by piSession.open() to read
+   * the stored modelId/thinkingLevel. Returns undefined when the key is unknown.
+   */
+  getSession(key: string): Session | undefined {
+    const r = this.db.prepare("SELECT * FROM projection_sessions WHERE key = ?").get(key) as Record<string, unknown> | undefined;
+    if (!r) return undefined;
+    return {
+      key: r.key as string,
+      name: r.name as string,
+      projectId: r.project_id as string,
+      state: r.state as State,
+      noInbox: (r.no_inbox as number) === 1,
+      lastTouchedAt: (r.last_touched_at as number | null) ?? null,
+      modelId: (r.model_id as string | null) ?? null,
+      thinkingLevel: (r.thinking_level as string | null) ?? null,
+    } as Session;
+  }
+
   /** A project's sessions. Called by GET /api/projects/:id/sessions. */
   getSessions(projectId: string): Session[] {
     // Map snake_case DB columns → the camelCase wire shape (Session).
@@ -394,6 +443,8 @@ export class StateStore {
       state: r.state as State,
       noInbox: (r.no_inbox as number) === 1,
       lastTouchedAt: (r.last_touched_at as number | null) ?? null,
+      modelId: (r.model_id as string | null) ?? null,
+      thinkingLevel: (r.thinking_level as string | null) ?? null,
     })) as Session[];
   }
 
@@ -436,6 +487,8 @@ export class StateStore {
       state: r.state as State,
       noInbox: (r.no_inbox as number) === 1,
       lastTouchedAt: (r.last_touched_at as number | null) ?? null,
+      modelId: (r.model_id as string | null) ?? null,
+      thinkingLevel: (r.thinking_level as string | null) ?? null,
     })) as Session[];
   }
 }

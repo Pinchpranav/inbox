@@ -12,10 +12,10 @@
 //   GET   /api/inbox                   → InboxSession[]
 //
 // We map the backend wire shapes onto the app's existing domain types
-// (Project / Session / Message from ../data/mock), so the UI components
+// (Project / Session / Message from ../data/domain), so the UI components
 // don't change.
 
-import type { Project, Session, Message, State } from "../data/mock";
+import type { Project, Session, Message, State, ModelEntry } from "../data/domain";
 import { baseUrl } from "../config";
 
 export class ApiError extends Error {
@@ -47,6 +47,8 @@ interface BackendSession {
   state: State;
   noInbox: boolean;
   lastTouchedAt: number | null;
+  modelId?: string | null;
+  thinkingLevel?: string | null;
 }
 
 interface BackendMessage {
@@ -110,6 +112,8 @@ function mapSession(s: BackendSession): Session {
     noInbox: s.noInbox,
     // lastTouchedAt null → 0; mock isInInbox treats 0 as "recent".
     updatedAt: s.lastTouchedAt ?? 0,
+    modelId: s.modelId ?? null,
+    thinkingLevel: s.thinkingLevel ?? null,
   };
 }
 
@@ -174,4 +178,19 @@ export async function moveSession(key: string, destProjectId: string): Promise<{
     json("POST", { destProjectId }),
   );
   return res.session;
+}
+
+/** GET /api/models — the catalog for the composer picker (build-gw6.5.1). */
+export async function getModels(): Promise<ModelEntry[]> {
+  return request<ModelEntry[]>("/api/models");
+}
+
+/** PATCH /api/sessions/:key/model — persist the chosen model (event-sourced). */
+export async function setSessionModel(key: string, modelId: string): Promise<void> {
+  await request(`/api/sessions/${encodeURIComponent(key)}/model`, json("PATCH", { model: modelId }));
+}
+
+/** PATCH /api/sessions/:key/thinking — persist the chosen thinking level. */
+export async function setSessionThinking(key: string, level: string): Promise<void> {
+  await request(`/api/sessions/${encodeURIComponent(key)}/thinking`, json("PATCH", { level }));
 }

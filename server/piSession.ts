@@ -45,6 +45,8 @@ const COMMANDCODE_API_BASE = process.env.COMMANDCODE_API_BASE ?? "https://api.co
  */
 export interface SessionHandle {
   sessionKey: string;
+  /** The model this handle is running (set at open; picker changes recreate the handle). */
+  modelId: string;
   /** The raw AgentSession (relay/test subscribes to it). */
   session: {
     subscribe(cb: (ev: unknown) => void): () => void;
@@ -148,7 +150,11 @@ export class PiSessionManager {
       baseUrl: COMMANDCODE_API_BASE,
       apiKey: "",
       api: "openai-completions",
-      headers: this.zdrEnabled ? { "x-cmd-zdr": "1" } : undefined,
+      // ZDR-off MUST pass an empty object, NOT undefined: pi's registerProvider()
+      // merges re-registrations and skips undefined values, so `undefined` would
+      // leave the stale x-cmd-zdr:1 header in place and non-ZDR models would keep
+      // failing with cmd_zdr_no_providers (silently swallowed -> empty reply).
+      headers: this.zdrEnabled ? { "x-cmd-zdr": "1" } : {},
       models: models.map((m) => ({
         id: m.id,
         name: m.name,
@@ -232,18 +238,24 @@ export class PiSessionManager {
    * @param projectDir execution cwd (the project's working directory)
    */
   async open(sessionKey: string, projectDir: string): Promise<SessionHandle> {
-    const existing = this.handles.get(sessionKey);
-    if (existing) return existing;
-
-    const history = this.store.getMessages(sessionKey);
+    // build-gw6.5.1: the stored model (fall back to manager default when null or no
+    // longer in the catalog). Resolved BEFORE the cached-handle check so a picker
+    // change on an already-open conversation is honored (see the recreate below).
     const stored = this.store.getSession(sessionKey);
-
-    // build-gw6.5.1: apply the stored model + thinking (fall back to manager defaults when
-    // null or no longer in the catalog). Applied on every open so a live, cached handle also
-    // picks up a picker change.
     const modelId = stored?.modelId && this.models.some((m) => m.id === stored.modelId)
       ? stored.modelId
       : this.modelId;
+
+    const existing = this.handles.get(sessionKey);
+    // Same model as the cached handle -> reuse it (the common path).
+    if (existing && existing.modelId === modelId) return existing;
+    // The picker changed the model for an already-open conversation: the cached handle
+    // still runs the OLD model (previously this was silently ignored, so a convo stuck
+    // on a broken model kept failing even after switching models). Dispose it and
+    // rebuild with the new model + fresh history seed from the store.
+    if (existing) existing.dispose();
+
+    const history = this.store.getMessages(sessionKey);
     const model = this.resolveModel(modelId);
 
     const { session } = await createAgentSession({
@@ -266,6 +278,7 @@ export class PiSessionManager {
 
     const handle: SessionHandle = {
       sessionKey,
+      modelId,
       session,
       dispose: () => {
         session.dispose();

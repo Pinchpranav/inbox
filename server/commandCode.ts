@@ -2,7 +2,9 @@
 //
 // Sourced from pi-commandcode-provider (MIT,
 // https://github.com/patlux/pi-commandcode-provider, v0.5.1) and the
-// command-code@1.15.1 bundled model catalog. Zero runtime dependencies.
+// command-code@1.36.0 bundled model catalog (verified against the npm
+// package's dist/bundled/command-code-knowledge/reference/models.md).
+// Zero runtime dependencies.
 //
 // Scope:
 //   - static data tables: input modalities, reasoning efforts, thinking map
@@ -42,16 +44,16 @@ export interface ModelCatalogEntry {
 export type CommandCodeInputType = "text" | "image";
 
 /**
- * Model input modalities from the command-code@1.15.1 bundled catalog.
- * Models omitted here remain text-only so newly discovered IDs never claim
- * image support without upstream evidence.
+ * Model input modalities from the command-code@1.36.0 bundled catalog
+ * (and the provider's synced commandcode-catalog.ts). Models omitted here
+ * remain text-only so newly discovered IDs never claim image support without
+ * upstream evidence.
  */
 export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCodeInputType[]>> = {
   "MiniMaxAI/MiniMax-M3": ["text", "image"],
   "Qwen/Qwen3.6-Plus": ["text", "image"],
   "Qwen/Qwen3.7-Flash": ["text", "image"],
   "Qwen/Qwen3.7-Plus": ["text", "image"],
-  "Qwen/Qwen3.8-Max": ["text", "image"],
   "claude-fable-5": ["text", "image"],
   "claude-haiku-4-5-20251001": ["text", "image"],
   "claude-opus-4-7": ["text", "image"],
@@ -59,10 +61,12 @@ export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCod
   "claude-opus-5": ["text", "image"],
   "claude-sonnet-4-6": ["text", "image"],
   "claude-sonnet-5": ["text", "image"],
+  "deepseek/deepseek-v4-flash-vision-exp": ["text", "image"],
   "google/gemini-3.1-flash-lite": ["text", "image"],
   "google/gemini-3.5-flash": ["text", "image"],
   "google/gemini-3.5-flash-lite": ["text", "image"],
   "google/gemini-3.6-flash": ["text", "image"],
+  "google/gemini-3.7-flash": ["text", "image"],
   "gpt-5.3-codex": ["text", "image"],
   "gpt-5.4": ["text", "image"],
   "gpt-5.4-mini": ["text", "image"],
@@ -78,12 +82,16 @@ export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCod
   "moonshotai/Kimi-K2.7-Code": ["text", "image"],
   "moonshotai/Kimi-K2.7-Code-Highspeed": ["text", "image"],
   "moonshotai/Kimi-K3": ["text", "image"],
+  "Qwen/Qwen3.8-27B": ["text", "image"],
+  "Qwen/Qwen3.8-Flash": ["text", "image"],
+  "Qwen/Qwen3.8-Max": ["text", "image"],
   "sakana/fugu-ultra": ["text", "image"],
   "stepfun/Step-3.7-Flash": ["text", "image"],
   "thinkingmachines/inkling": ["text", "image"],
   "thinkingmachines/inkling-small": ["text", "image"],
   "xai/grok-4.5": ["text", "image"],
   "xiaomi/mimo-v2.5": ["text", "image"],
+  "z-ai/glm-5.3-flash": ["text", "image"],
 };
 
 const TEXT_INPUT_ONLY: readonly CommandCodeInputType[] = ["text"];
@@ -98,9 +106,69 @@ export function modelSupportsImageInput(modelId: string): boolean {
   return inputModalitiesForModel(modelId).includes("image");
 }
 
-/** Whether a model id is a known reasoning model (has a MODEL_EFFORTS entry). */
+/**
+ * Models that reason at all (with or without selectable efforts).
+ *
+ * The Provider API does not expose this. Snapshot of `MODEL_REASONING` from
+ * the provider's synced commandcode-catalog.ts (command-code@1.32.2), which
+ * lists reasoning models even when Command Code chooses their depth
+ * automatically (no `MODEL_EFFORTS` entry). A model in this set but not in
+ * MODEL_EFFORTS reasons with automatic depth.
+ */
+export const MODEL_REASONING: Readonly<Record<string, true>> = {
+  "claude-fable-5": true,
+  "claude-opus-4-7": true,
+  "claude-opus-4-8": true,
+  "claude-opus-5": true,
+  "claude-sonnet-4-6": true,
+  "claude-sonnet-5": true,
+  "deepseek/deepseek-v4-flash": true,
+  "deepseek/deepseek-v4-flash-vision-exp": true,
+  "deepseek/deepseek-v4-pro": true,
+  "google/gemini-3.1-flash-lite": true,
+  "google/gemini-3.5-flash": true,
+  "google/gemini-3.5-flash-lite": true,
+  "google/gemini-3.6-flash": true,
+  "google/gemini-3.7-flash": true,
+  "gpt-5.3-codex": true,
+  "gpt-5.4": true,
+  "gpt-5.4-mini": true,
+  "gpt-5.5": true,
+  "gpt-5.6-luna": true,
+  "gpt-5.6-sol": true,
+  "gpt-5.6-terra": true,
+  "meta/muse-spark-1.1": true,
+  "meta/muse-spark-1.2": true,
+  "meta/muse-spark-1.2-contributor": true,
+  "MiniMaxAI/MiniMax-M3": true,
+  "moonshotai/Kimi-K2.7-Code": true,
+  "moonshotai/Kimi-K2.7-Code-Highspeed": true,
+  "moonshotai/Kimi-K3": true,
+  "nvidia/nemotron-3-ultra-550b-a55b": true,
+  "poolside/laguna-s-2.1-free": true,
+  "Qwen/Qwen3.6-Max-Preview": true,
+  "Qwen/Qwen3.6-Plus": true,
+  "Qwen/Qwen3.7-Flash": true,
+  "Qwen/Qwen3.7-Max": true,
+  "Qwen/Qwen3.7-Plus": true,
+  "Qwen/Qwen3.8-27B": true,
+  "Qwen/Qwen3.8-Max": true,
+  "sakana/fugu-ultra": true,
+  "stealth/ox-alpha": true,
+  "stepfun/Step-3.5-Flash": true,
+  "stepfun/Step-3.7-Flash": true,
+  "tencent/hy3-paid": true,
+  "thinkingmachines/inkling": true,
+  "thinkingmachines/inkling-small": true,
+  "xai/grok-4.5": true,
+  "xai/grok-4.6": true,
+  "zai-org/GLM-5.2": true,
+  "zai-org/GLM-5.3": true,
+};
+
+/** Whether a model id is a known reasoning model (has a MODEL_REASONING entry). */
 function isReasoningModel(modelId: string): boolean {
-  return MODEL_EFFORTS[modelId] !== undefined;
+  return MODEL_REASONING[modelId] !== undefined;
 }
 
 // ── Thinking levels (pi's ModelThinkingLevel) ──────────────────────
@@ -114,10 +182,16 @@ type CommandCodeReasoningEffort = Exclude<PiThinkingLevel, "off">;
  * Per-model reasoning efforts supported by Command Code's generate endpoint.
  *
  * The Provider API does not expose reasoning metadata. This is an exact
- * snapshot of `reasoningEfforts` from the command-code@1.15.1 model catalog
- * (`packages/shared/src/model-catalog.ts`, also published in the generated
+ * snapshot of `reasoningEfforts` from the command-code@1.36.0 model catalog
+ * (published in the generated
  * `dist/bundled/command-code-knowledge/reference/models.md`). Models omitted
  * here let Command Code choose their reasoning depth, matching the CLI.
+ *
+ * NOTE: an omitted entry means "no selectable effort", NOT "does not reason"
+ * — many `—` models (Kimi, MiniMax, muse-spark, Qwen3.7/3.6, claude-haiku,
+ * stepfun, nemotron, poolside, tencent/hy3) still reason with Command Code
+ * deciding depth automatically. See `MODEL_REASONING` for the authoritative
+ * "does it reason?" set.
  */
 export const MODEL_EFFORTS: Readonly<Record<string, readonly CommandCodeReasoningEffort[]>> = {
   "Qwen/Qwen3.8-Max": ["low", "medium", "xhigh"],
@@ -128,6 +202,7 @@ export const MODEL_EFFORTS: Readonly<Record<string, readonly CommandCodeReasonin
   "claude-sonnet-4-6": ["low", "medium", "high", "xhigh", "max"],
   "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
   "deepseek/deepseek-v4-flash": ["high", "max"],
+  "deepseek/deepseek-v4-flash-vision-exp": ["high", "max"],
   "deepseek/deepseek-v4-pro": ["high", "max"],
   "gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
   "gpt-5.4": ["low", "medium", "high", "xhigh"],
@@ -140,9 +215,15 @@ export const MODEL_EFFORTS: Readonly<Record<string, readonly CommandCodeReasonin
   "google/gemini-3.5-flash": ["low", "medium", "high"],
   "google/gemini-3.5-flash-lite": ["low", "medium", "high"],
   "google/gemini-3.6-flash": ["low", "medium", "high"],
+  "google/gemini-3.7-flash": ["low", "medium", "high"],
+  "Qwen/Qwen3.8-27B": ["low", "medium", "xhigh"],
+  "Qwen/Qwen3.8-Flash": ["low", "medium", "xhigh"],
   "sakana/fugu-ultra": ["high", "xhigh"],
   "xai/grok-4.5": ["low", "medium", "high"],
+  "xai/grok-4.6": ["low", "medium", "high", "xhigh"],
+  "z-ai/glm-5.3-flash": ["low", "high", "max"],
   "zai-org/GLM-5.2": ["high", "max"],
+  "zai-org/GLM-5.3": ["low", "high", "max"],
 };
 
 export const PI_THINKING_LEVELS: readonly PiThinkingLevel[] = [
@@ -272,6 +353,7 @@ export async function fetchModels(options: FetchModelsOptions = {}): Promise<Com
 export const COMMAND_CODE = {
   MODEL_INPUT_MODALITIES,
   MODEL_EFFORTS,
+  MODEL_REASONING,
   PI_THINKING_LEVELS,
   DEFAULT_MODELS_URL,
   DEFAULT_MODELS_TIMEOUT_MS,

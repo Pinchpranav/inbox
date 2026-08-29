@@ -1,2 +1,15 @@
 Q: Understand the codebase (Hono + pi backend, Vue frontend) so I can review and sharpen it.
 A: The repo is a Vue 3 + Vite + TS frontend (src/) talking over HTTP+WS to a Hono backend (server/) that holds one in-process pi AgentSession per conversation and persists everything to sqlite (event-sourcing + projections) — a clean "brain (pi) / state (sqlite)" split; the core loop (projects/sessions/inbox/conversations/streaming) is built and typechecks, while memory (dolt/Beads), subagents and schedules are later-phase seams.
+
+---
+Q: Review endpoint GET /api/health (bead build-5n8) — independent review.
+A: The endpoint is correct and works (verified live: 200, application/json, {"ok":true}), but it is a LIVERENESS-only probe: it always returns ok once HTTP is up and never checks the store/DB, config completeness (OLLAMA_API_KEY can be absent), or post-startup DB health, so deploy/start.sh's readiness poll can report green while the app can't actually chat; sharpening = add a readiness/DB sub-check, runtime metadata (uptime/version/pid), and Cache-Control: no-store.
+---
+Q: Trace GET /api/health end-to-end incl. the negative case — what happens when it goes red?
+A: Path = caller -> nginx :8085 (location /api/, proxy_pass preserves /api/health) -> Hono app -> handler returns {ok:true} unconditionally (no error middleware exists); a negative can ONLY be transport-level (502/connection refused) because the handler never returns non-200 while alive; and NOTHING acts on a negative: start.sh warns but still exits 0 (|| guard defeats set -e), systemd watches the process not health (no ExecStartPost/watchdog), cloudflared/LB don't health-check, and the UI dot uses fetchView() not health — so the endpoint is a read-only probe with zero downstream enforcement.
+---
+Q: Remove the GET /api/health endpoint (decided to swap instead of naked-delete).
+A: Removed app.get("/api/health") from server/index.ts (verified 404) and swapped the deploy readiness probe to GET /api/projects in deploy/start.sh (a real DB-backed read — 200 only when store works); updated deploy/DEPLOYMENT.md + README.md references; /api/projects returns [] 200 application/json; only direction/deployment plan.md still mentions /api/health (left as design doc).
+---
+Q: Review endpoint GET /api/projects end-to-end (independent).
+A: Works correctly (verified live: [] on empty, POST->GET round-trip serializes {id,name,dir,state,createdAt,updatedAt}, HEAD 200, query params ignored). Findings: (1) `dir` (server filesystem path) is sent to the client but mapProject() drops it — unnecessary payload + minor info disclosure; (2) no app.onError/error middleware, so a store throw returns a default 500 that may leak the internal error; (3) `emoji` uses `?? undefined` so an empty-string emoji serializes as "" not omitted; (4) shape is a bare array vs {ok,...} elsewhere (inconsistent, minor); (5) fetchView() does N+1 (per-project session calls) and projectDirFor does an O(N) linear scan per chat prompt — fine at small scale, watch as it grows. Also note: this endpoint now doubles as the deploy readiness probe (200 only when store read works) — intended stricter check.

@@ -129,3 +129,24 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+
+## Session: build-gw6 design (2026-08-23)
+
+Q: How should server/commandCode.ts first be implemented (split build-gw6 into small closable tasks, focus on commandCode.ts)?
+A: commandCode.ts = pure/static data + catalog layer only (re-export MODELS/COSTS/EFFORTS/THINKING_MAP + fetch/cache with 10s cooldown + wrapped cache types), deliberating on an x-cmd-zdr header-injection hook driven by a session handle, with merge later into piSession.ts — no extension install.
+
+## Session: build-a9c review (2026-08-27)
+
+Q: What's actually left on the build-a9c frontend refactor (slice 1)?
+A: Code is done and REST-verified; the only remaining gate is the owner's 2-minute browser smoke on :5174 (real data) covering stream/switch/picker/ZDR, then close build-a9c.
+
+## Session: build-a9c live WS smoke (2026-08-27)
+
+Q: Can the backend + new frontend wiring handle a real streaming turn end-to-end?
+A: Yes — two turns over raw WS on :8787 streamed and persisted correctly (SMOKE_ONE/SMOKE_TWO, message.delta/end/status frames); leftover: `__a9c_smoke` project (id e95696e2-…) in .inbox/inbox.db — no delete API, remove via a cleanup script or leave as clutter.
+
+## Session: build-a9c code review (2026-08-27)
+
+Q: Review the build-a9c refactor changes in detail before commit?
+A: Ship it — layering/abort-interplay/loadHistory-guard verified correct; 2 follow-up nits (zdrOn is hardcoded true, never read back from server; offline ZDR toggle flips UI with no request/rollback) filed as a candidate bead, 2 by-design notes (drawer memory never evicted; rare double "⚠ chat error" on socket drop).

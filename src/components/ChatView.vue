@@ -362,79 +362,10 @@ watch(
   background: var(--bg-soft-2);
 }
 
-/* Composer */
-.composer {
-  width: 100%;
-  max-width: 48rem;
-  margin: 0 auto;
-  padding: 8px 16px 12px;
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-  background: transparent;
-  border-top: none;
-}
+/* Composer layout override for the empty-thread case: center the composer in
+   the pane. (Composer.vue owns the composer's own styling; a parent's scoped
+   CSS still reaches the child's root element, so this override works.) */
 .chat-body.is-empty .composer {
   margin: auto;
-  border-top: none;
-}
-.input {
-  flex: 1;
-  resize: none;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--bg);
-  color: var(--text);
-  outline: none;
-  max-height: 200px;
-  line-height: 1.5;
-  font-family: inherit;
-  font-size: 14px;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-.input::placeholder {
-  color: var(--text-soft);
-  opacity: 0.75;
-}
-.input:focus {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.input:disabled {
-  opacity: 0.6;
-}
-.send,
-.stop {
-  padding: 12px 20px;
-  border-radius: 16px;
-  font-weight: 600;
-  font-size: 14px;
-  cursor: pointer;
-  transition: opacity 0.15s ease, background 0.15s ease, transform 0.05s ease;
-}
-.send {
-  background: var(--accent);
-  color: var(--accent-contrast);
-  border: none;
-}
-.send:hover:not(:disabled) {
-  opacity: 0.9;
-}
-.send:active:not(:disabled) {
-  transform: scale(0.97);
-}
-.send:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.stop {
-  background: transparent;
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-}
-.stop:hover {
-  background: var(--bg-soft-2);
 }
 </style>

@@ -22,7 +22,6 @@
   --conn-ok: #16a34a;
   --conn-loading: #d97706;
   --conn-error: #dc2626;
-  --conn-demo: #9a9aa1;
   /* monospace stack for metadata (ledger feel) */
   --font-mono: ui-monospace, "JetBrains Mono", "Roboto Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
@@ -53,7 +52,6 @@ html[data-theme="dark"] {
   --conn-ok: #4ade80;
   --conn-loading: #fbbf24;
   --conn-error: #ef4444;
-  --conn-demo: #6b6b73;
   --pit-shadow: inset 2px 0 10px -3px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(0, 0, 0, 0.5);
   --user-bubble-bg: #20203a;
   --user-bubble-text: var(--text);

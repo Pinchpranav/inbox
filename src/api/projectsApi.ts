@@ -194,3 +194,8 @@ export async function setSessionModel(key: string, modelId: string): Promise<voi
 export async function setSessionThinking(key: string, level: string): Promise<void> {
   await request(`/api/sessions/${encodeURIComponent(key)}/thinking`, json("PATCH", { level }));
 }
+
+/** POST /api/sessions/zdr — global ZDR toggle (x-cmd-zdr on every request). */
+export async function setZdr(zdr: boolean): Promise<void> {
+  await request("/api/sessions/zdr", json("POST", { zdr }));
+}

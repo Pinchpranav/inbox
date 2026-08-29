@@ -13,10 +13,10 @@ const props = defineProps<{
   projects: Project[];
   sessions: Session[];
   selectedKey: string | null;
-  /** Gateway connection status shown as a small dot in the header. */
-  conn?: "ok" | "loading" | "error" | "demo";
+  /** Backend connection status shown as a small dot in the header. */
+  conn?: "ok" | "loading" | "error";
   connError?: string;
-  /** Global ZDR (zero data retention) state, owned by App.vue (build-gw6.5.1). */
+  /** Global ZDR (zero data retention) state, owned by backend.ts (build-gw6.5.1). */
   zdr?: boolean;
 }>();
 
@@ -41,8 +41,6 @@ function connTitle(): string {
       return "Connecting…";
     case "error":
       return props.connError || "Connection error";
-    case "demo":
-      return "Demo mode — backend unreachable (click ⚙ to configure)";
     default:
       return "Connection unknown";
   }
@@ -102,7 +100,7 @@ function onMove(s: Session) {
 <template>
   <aside class="sidebar">
     <div class="head">
-      <span class="conn-dot" :data-conn="conn ?? 'demo'" :title="connTitle()"></span>
+      <span class="conn-dot" :data-conn="conn ?? 'loading'" :title="connTitle()"></span>
       <button class="settings-btn" title="Backend settings" @click="$emit('open-settings')">⋯</button>
       <div class="brand-wrap">
         <h1 class="brand">Threads</h1>
@@ -119,6 +117,14 @@ function onMove(s: Session) {
     </div>
 
     <div class="scroll">
+      <!-- Offline empty state (build-a9c: demo mode removed — no fake data) -->
+      <div v-if="conn === 'error' && projects.length === 0" class="offline-card">
+        <p class="offline-title">Backend not connected</p>
+        <p class="offline-sub">{{ connError || "Start the server, then check again." }}</p>
+        <button class="offline-btn" @click="$emit('open-settings')">Open settings</button>
+      </div>
+
+      <template v-else>
       <!-- INBOX (not collapsible; same label style as Projects) -->
       <div class="section-label">
         <span>Inbox</span>
@@ -211,6 +217,7 @@ function onMove(s: Session) {
           </div>
         </div>
       </section>
+      </template>
     </div>
   </aside>
 </template>
@@ -335,14 +342,44 @@ function onMove(s: Session) {
   background: var(--conn-error);
   border-color: var(--conn-error);
 }
-.conn-dot[data-conn="demo"] {
-  background: transparent;
-  border-style: dashed;
-  border-color: var(--conn-demo);
-}
 @keyframes conn-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
+}
+
+/* Offline empty state (build-a9c) */
+.offline-card {
+  margin: 16px 8px;
+  padding: 16px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  text-align: center;
+  color: var(--text-soft);
+}
+.offline-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.offline-sub {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  word-break: break-word;
+}
+.offline-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+}
+.offline-btn:hover {
+  color: var(--text);
+  background: var(--bg-soft-2);
 }
 
 .scroll {

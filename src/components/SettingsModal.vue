@@ -5,7 +5,7 @@ import type { BackendConfig } from "../config";
 const props = defineProps<{
   open: boolean;
   config: BackendConfig;
-  conn?: "ok" | "loading" | "error" | "demo";
+  conn?: "ok" | "loading" | "error";
   connError?: string;
 }>();
 
@@ -56,14 +56,14 @@ function save() {
       </label>
 
       <div class="status">
-        <span class="dot" :data-conn="conn ?? 'demo'"></span>
+        <span class="dot" :data-conn="conn ?? 'loading'"></span>
         <span class="status-text">
           <template v-if="conn === 'ok'">Connected</template>
           <template v-else-if="conn === 'loading'">Connecting…</template>
           <template v-else-if="conn === 'error'">{{
             connError || "Connection error"
           }}</template>
-          <template v-else>Demo mode (no backend)</template>
+          <template v-else>Connection error</template>
         </span>
       </div>
 
@@ -180,11 +180,6 @@ function save() {
 .dot[data-conn="error"] {
   background: var(--conn-error);
   border-color: var(--conn-error);
-}
-.dot[data-conn="demo"] {
-  background: transparent;
-  border-style: dashed;
-  border-color: var(--conn-demo);
 }
 .actions {
   display: flex;

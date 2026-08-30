@@ -74,11 +74,13 @@ function pickModel(id: string) {
 // ── Control row: thinking pill ──────────────────────────────────────────
 const THINKING_LADDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-// Levels this model actually supports (off + the map's non-null keys).
+// Levels this model actually supports (off + the map's keys with a non-null
+// value). thinkingLevelMapForEfforts() fills EVERY ladder level, mapping
+// unsupported ones to null — so filter on the value, not just the key.
 const availableLevels = computed<string[]>(() => {
   const map = currentModel.value?.thinkingLevelMap;
   if (!map) return ["off"];
-  const keys = Object.keys(map).map((k) => k.toLowerCase());
+  const keys = Object.keys(map).filter((k) => map[k as keyof typeof map] != null);
   return ["off", ...THINKING_LADDER.filter((l) => keys.includes(l))];
 });
 

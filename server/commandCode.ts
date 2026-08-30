@@ -152,6 +152,7 @@ export const MODEL_REASONING: Readonly<Record<string, true>> = {
   "Qwen/Qwen3.7-Max": true,
   "Qwen/Qwen3.7-Plus": true,
   "Qwen/Qwen3.8-27B": true,
+  "Qwen/Qwen3.8-Flash": true,
   "Qwen/Qwen3.8-Max": true,
   "sakana/fugu-ultra": true,
   "stealth/ox-alpha": true,
@@ -164,6 +165,7 @@ export const MODEL_REASONING: Readonly<Record<string, true>> = {
   "xai/grok-4.6": true,
   "zai-org/GLM-5.2": true,
   "zai-org/GLM-5.3": true,
+  "z-ai/glm-5.3-flash": true,
 };
 
 /** Whether a model id is a known reasoning model (has a MODEL_REASONING entry). */

@@ -1,0 +1,8 @@
+Q: Provide final problem statement for ollama-cloud to command-code provider swap (open-models to OpenAI-compatible, ZDR toggle, all models, thinking levels)
+A: Filed bead for swap to command-code with OpenAI-compatible models, per-conversation ZDR toggle (off=muse spark 1.2, on=deepseek-v4-flash), all models via GET /api/models, vendored pi-commandcode-provider logic, and UI picker+thinking pill.
+Q: You're just looping endlessly. Just give a final summary.
+A: Filed final spec to build-gw6 covering OpenAI-compatible command-code swap with per-conversation ZDR toggle, all-models picker, and thinking levels.
+Q: I think we have so many tasks in this one problem statement. Can you give me a list of subtasks perhaps?
+A: Proposed 7 sequenced subtasks from vendored commandCode.ts catalog through PiSessionManager wiring, per-session ZDR/model/thinking persistence, APIs, UI picker+thinking+ZDR, docs cache, and final Ollama cleanup/verification.
+Q: Implement build-359 (coalesce WS deltas to ~1 frame/sec)? Just round-trip reduction, no first-flush, no abort change, minimal lines.
+A: Done in server/relay.ts only (~12 net lines): 1s setInterval flushes an in-memory buffer as one store.write(streaming:true) + one bus emit; text_end clears the interval and drops the buffer before the final REPLACE write; abort/first-flush/client untouched. tsc clean; simulated relay test passed (5 deltas → 2 writes, streamedText intact).

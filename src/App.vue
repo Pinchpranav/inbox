@@ -51,6 +51,7 @@ const liveMessages = computed<Message[]>(() => live.value?.messages ?? []);
 const liveText = computed(() => live.value?.liveText ?? "");
 const livePhase = computed(() => live.value?.phase ?? null);
 const liveStreaming = computed(() => live.value?.streaming ?? false);
+const liveLoading = computed(() => live.value?.loading ?? false);
 
 // ── lifecycle ─────────────────────────────────────────────────────────────
 onMounted(() => startPolling());
@@ -151,6 +152,7 @@ function onClearSettings() {
       :live-text="liveText"
       :phase="livePhase"
       :streaming="liveStreaming"
+      :loading="liveLoading"
       :sidebar-collapsed="sidebarCollapsed"
       :models="models"
       :model-id="selectedModelId"

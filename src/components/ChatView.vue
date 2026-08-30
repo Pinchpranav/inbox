@@ -12,6 +12,8 @@ const props = defineProps<{
   liveText: string;
   phase: string | null;
   streaming: boolean;
+  /** History fetch in flight — show "loading conversation…" instead of the empty hero. */
+  loading: boolean;
   sidebarCollapsed: boolean;
   models: ModelEntry[];
   modelId: string | null;
@@ -25,7 +27,12 @@ const autoFollow = ref(true);
 const showEnd = ref(false);
 
 const isEmptyThread = computed(
-  () => !!props.session && props.messages.length === 0 && !props.liveText && !props.streaming,
+  () =>
+    !!props.session &&
+    !props.loading &&
+    props.messages.length === 0 &&
+    !props.liveText &&
+    !props.streaming,
 );
 
 function onScroll() {
@@ -104,7 +111,12 @@ watch(
 
     <!-- Thread body -->
     <div v-else class="chat-body" :class="{ 'is-empty': isEmptyThread }">
-      <div v-show="!isEmptyThread" ref="scrollEl" class="messages" @scroll="onScroll">
+      <!-- Loading state: history fetch in flight -->
+      <div v-if="loading" class="loading-state">
+        <span class="pulse"></span> loading conversation…
+      </div>
+
+      <div v-show="!isEmptyThread && !loading" ref="scrollEl" class="messages" @scroll="onScroll">
         <div class="messages-inner">
           <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
             <div v-if="m.role === 'user'" class="bubble">
@@ -340,6 +352,17 @@ watch(
   50% {
     opacity: 1;
   }
+}
+
+/* Loading state (history fetch in flight) */
+.loading-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-faint);
 }
 
 /* Scroll-to-end pill */

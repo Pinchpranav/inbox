@@ -22,6 +22,8 @@ import type { Message } from "../data/domain";
 export interface LiveState {
   /** Settled messages: transcript history + finished replies. */
   messages: Message[];
+  /** History fetch in flight (drawer just created for a selected thread). */
+  loading: boolean;
   /** The assistant reply being streamed right now. */
   liveText: string;
   /** Status line under the live reply ("preparing…", "generating…"). */
@@ -38,6 +40,7 @@ function drawer(key: string): LiveState {
   if (!d) {
     d = {
       messages: [],
+      loading: false,
       liveText: "",
       phase: null,
       streaming: false,
@@ -65,8 +68,10 @@ export function isStreaming(key: string): boolean {
  *  persisted copy, so we keep it. */
 export async function loadHistory(key: string): Promise<void> {
   const d = drawer(key);
+  d.loading = true;
   if (conn.value !== "ok") {
     d.messages = [];
+    d.loading = false;
     return;
   }
   try {
@@ -75,6 +80,8 @@ export async function loadHistory(key: string): Promise<void> {
   } catch (err) {
     if (!d.streaming) d.messages = [];
     connError.value = `messages: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    d.loading = false;
   }
 }
 

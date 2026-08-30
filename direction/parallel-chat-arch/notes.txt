@@ -33,3 +33,7 @@ A: It doesn't watch the stream — pi's session.prompt() is a promise that resol
 Session: build-b0j (2026-08-29)
 Q: How was server turn-status rehydration implemented?
 A: New server/turnRegistry.ts (process-wide Set<string>, has/add/delete/keys); chat.ts WS route adds around await session.prompt() and deletes in finally (replacing per-connection busy); sessions.ts serves GET /api/sessions/:key/status; frontend loadHistory rehydrates drawer streaming/phase from it, and watchRehydratedTurn polls every 5s to settle rehydrated turns (no socket = no terminal frame, so without it streaming would block send() forever) — stopgap until the subscribe-all WS.
+
+Session summary (2026-08-29, full conversation):
+Q: Summarize everything done this session?
+A: Understood + closed the double-click-open bug and refresh-survival gap (build-c84 loading flag, build-b0j runningTurns/turnRegistry + status endpoint + watchRehydratedTurn stopgap), fixed the thinking pill to show only supported levels (build-fi6), replaced per-connection busy with per-conversation turnRegistry, learned the chat.ts drawer model (live = the map, LiveState = row shape, drawer(key) = get-or-create), and left build-2q6 (idle eviction + SIGINT handler) as the only open bead; deploy = git pull + bash deploy/start.sh.

@@ -12,6 +12,7 @@
 import { Hono } from "hono";
 import type { StateStore, Session, State } from "../stateStore.ts";
 import type { PiSessionManager } from "../piSession.ts";
+import { turnRegistry } from "../turnRegistry.ts";
 
 const STATES: readonly State[] = ["active", "deferred", "done"];
 
@@ -37,6 +38,13 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
   app.get("/api/sessions/:key/messages", (c) => {
     const key = c.req.param("key");
     return c.json(store.getMessages(key));
+  });
+
+  // GET /api/sessions/:key/status — is a turn running on this conversation?
+  // The WS route (chat.ts) maintains the registry; this REST route only reads it.
+  app.get("/api/sessions/:key/status", (c) => {
+    const key = c.req.param("key");
+    return c.json({ sessionKey: key, running: turnRegistry.has(key) });
   });
 
   // PATCH /api/sessions/:key/state — move a conversation through active/deferred/done.

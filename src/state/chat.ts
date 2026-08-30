@@ -77,11 +77,75 @@ export async function loadHistory(key: string): Promise<void> {
   try {
     const rows = await api.fetchMessages(key);
     if (!d.streaming) d.messages = rows;
+    // Turn-status rehydration (build-b0j): after a refresh the drawer is brand
+    // new, but the server may still be running a turn for this conversation.
+    // Ask it; if yes, re-derive the live state instead of staying silent until
+    // the next message.end lands.
+    if (!d.streaming) {
+      try {
+        if (await api.fetchSessionStatus(key)) {
+          d.streaming = true;
+          d.phase = "generating…";
+          watchRehydratedTurn(key); // no socket -> poll the server until the turn ends
+        }
+      } catch {
+        /* status check is best-effort; the poll re-syncs settled state anyway */
+      }
+    }
   } catch (err) {
     if (!d.streaming) d.messages = [];
     connError.value = `messages: ${err instanceof Error ? err.message : String(err)}`;
   } finally {
     d.loading = false;
+  }
+}
+
+// ── rehydrated-turn watcher ─────────────────────────────────
+
+/** A rehydrated turn has no socket, so no terminal frame will ever arrive.
+ *  Poll the status endpoint; when the server says the turn is done, reload
+ *  the (now-settled) transcript and clear the live state. 
+ *  This is so that send button isn't being blocked for eternity. It is just a 
+ *  stopgap implementation. I should see if a better implementation is possible 
+ *  later ig.
+ *  */
+
+const watchers = new Map<string, ReturnType<typeof setInterval>>();
+
+function watchRehydratedTurn(key: string): void {
+  if (watchers.has(key)) return; // one watcher per drawer
+  const timer = setInterval(async () => {
+    const d = live[key];
+    // The user sent a new prompt meanwhile -> a real socket owns this turn now.
+    if (!d || !d.streaming || d.socket) {
+      clearInterval(timer);
+      watchers.delete(key);
+      return;
+    }
+    try {
+      if (await api.fetchSessionStatus(key)) return; // still running
+      // Turn finished server-side: settle the drawer from the store.
+      clearInterval(timer);
+      watchers.delete(key);
+      d.streaming = false;
+      d.phase = null;
+      try {
+        d.messages = await api.fetchMessages(key);
+      } catch {
+        /* the 5s poll will pick the transcript up */
+      }
+    } catch {
+      /* transient network error -> retry next tick */
+    }
+  }, 5000);
+  watchers.set(key, timer);
+}
+
+function stopWatcher(key: string): void {
+  const timer = watchers.get(key);
+  if (timer) {
+    clearInterval(timer);
+    watchers.delete(key);
   }
 }
 
@@ -155,6 +219,7 @@ export function abort(key: string): void {
 
 /** Close the socket + fallback timer for `key`'s drawer. */
 export function closeTurn(key: string): void {
+  stopWatcher(key);
   const d = drawer(key);
   if (d.abortFallback) {
     clearTimeout(d.abortFallback);
@@ -169,6 +234,8 @@ export function closeTurn(key: string): void {
 /** Close every open turn (app unmount). */
 export function closeAll(): void {
   for (const key of Object.keys(live)) closeTurn(key);
+  for (const timer of watchers.values()) clearInterval(timer);
+  watchers.clear();
 }
 
 // ── settlement ────────────────────────────────────────────────────────────

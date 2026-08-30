@@ -145,6 +145,12 @@ export async function fetchMessages(key: string): Promise<Message[]> {
   return rows.map(mapMessage);
 }
 
+/** GET /api/sessions/:key/status — is a turn running on this conversation? */
+export async function fetchSessionStatus(key: string): Promise<boolean> {
+  const res = await request<{ running: boolean }>(`/api/sessions/${encodeURIComponent(key)}/status`);
+  return res.running;
+}
+
 // ── WRITE ─────────────────────────────────────────────────────────────────
 
 export async function createProject(name: string, dir: string): Promise<{ id: string }> {

@@ -38,6 +38,7 @@ import type { StateStore, Message } from "../stateStore.ts";
 import type { PiSessionManager, SessionHandle } from "../piSession.ts";
 import { recordUserMessage, attachAssistantRelay, type AttachedRelay } from "../relay.ts";
 import { bus, EVENT, type BusEvent } from "../bus.ts";
+import { turnRegistry } from "../turnRegistry.ts";
 import type { ClientFrame } from "../types.ts";
 
 /** Everything the chat route needs, injected by index.ts (build-5ei). */
@@ -70,7 +71,6 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
       const sessionKey = c.req.param("key") as string;
       // Per-connection state:
       let currentHandle: SessionHandle | undefined; // the open AgentSession, for abort
-      let busy = false; // guard: one turn at a time per connection
       let abortRequested = false; // set by the abort handler; read by the prompt handler (which owns the terminal frame)
       let busHandler: ((ev: BusEvent) => void) | null = null; // for cleanup via bus.off
 
@@ -118,11 +118,13 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
             }
             const text = frame.text; // narrowed here (inside the async closure TS resets it)
             void (async () => {
-              if (busy) {
+              // One turn at a time PER CONVERSATION (not per connection): a second
+              // prompt on the same key would interleave inside one AgentSession.
+              if (turnRegistry.has(sessionKey)) {
                 wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "error" }));
                 return;
               }
-              busy = true;
+              turnRegistry.add(sessionKey);
               abortRequested = false;
               // The relay is scoped here so its `finally` unsubscribe always runs (stale-relay fix).
               let relay: AttachedRelay | null = null;
@@ -154,7 +156,7 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
                 wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: String(err) }));
               } finally {
                 relay?.unsubscribe(); // detach this turn's relay from the shared AgentSession (stale-relay fix)
-                busy = false;
+                turnRegistry.delete(sessionKey); // the turn is over (idle/aborted/error all pass through here)
               }
             })();
           } else if (frame.type === "abort") {

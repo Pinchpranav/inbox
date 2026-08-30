@@ -26,3 +26,10 @@ A: t3code decouples by making the URL own the active thread and the server own p
 
 Q: Why double-click to see a conversation (first click shows empty)? Why is the "preparing…" indicator gone after refresh?
 A: Bug 1: on select, App.vue renders the drawer with messages:[] and loadHistory() is async — until fetchMessages resolves, the drawer is empty and (during streaming-guard or a race where the poll re-creates the session entry) it can show the empty-state instead of a loading state; a second click re-triggers loadHistory now that data is cached. Fix: an explicit drawer.loading flag rendered as "loading conversation…". Bug 2: "preparing…" is purely client-side drawer state (d.phase set by send()); after a refresh the drawer is new, the server turn keeps running but no browser observes it, and the 5s poll only syncs settled messages — so the indicator vanishes until message.end. Fix (part of the subscribe-all WS work): on loadHistory/connect, ask the server "is a turn running for this key?" (sessionStatus in the view payload or a status frame on subscribe) and re-derive phase/streaming from that.
+
+Q: How does the busy flag know the assistant turn is still going (tools/thinking/text)?
+A: It doesn't watch the stream — pi's session.prompt() is a promise that resolves only when the whole turn finishes, so the promise's lifetime IS the turn's lifetime; runningTurns.add(key) before the await, delete(key) in finally.
+
+Session: build-b0j (2026-08-29)
+Q: How was server turn-status rehydration implemented?
+A: New server/turnRegistry.ts (process-wide Set<string>, has/add/delete/keys); chat.ts WS route adds around await session.prompt() and deletes in finally (replacing per-connection busy); sessions.ts serves GET /api/sessions/:key/status; frontend loadHistory rehydrates drawer streaming/phase from it, and watchRehydratedTurn polls every 5s to settle rehydrated turns (no socket = no terminal frame, so without it streaming would block send() forever) — stopgap until the subscribe-all WS.

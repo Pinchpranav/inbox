@@ -13,6 +13,8 @@
 
 export type ChatPhase = "streaming" | "idle" | "aborted" | "error";
 
+import { baseUrl } from "../config";
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -46,8 +48,10 @@ export class ChatSocket {
 
   /** Open the socket. The caller should send a prompt from onOpen (or right after). */
   connect(): void {
-    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${scheme}//${window.location.host}/api/chat/${encodeURIComponent(this.key)}`;
+    // Resolve against the same base URL the REST client uses (localStorage →
+    // VITE_BACKEND_URL → same-origin), so WS and HTTP always hit the same backend.
+    const base = baseUrl().replace(/^http/, "ws"); // http→ws, https→wss; "" stays "" (same-origin)
+    const url = `${base}/api/chat/${encodeURIComponent(this.key)}`;
     const ws = new WebSocket(url);
     this.ws = ws;
     ws.onopen = () => this.handlers.onOpen?.();

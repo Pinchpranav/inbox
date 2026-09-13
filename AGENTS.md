@@ -150,3 +150,37 @@ A: Yes — two turns over raw WS on :8787 streamed and persisted correctly (SMOK
 
 Q: Review the build-a9c refactor changes in detail before commit?
 A: Ship it — layering/abort-interplay/loadHistory-guard verified correct; 2 follow-up nits (zdrOn is hardcoded true, never read back from server; offline ZDR toggle flips UI with no request/rollback) filed as a candidate bead, 2 by-design notes (drawer memory never evicted; rare double "⚠ chat error" on socket drop).
+
+## Session: sync check (2026-09-13)
+
+Q: Pull the latest repo so we know we're up to date before picking new work?
+A: Fast-forwarded 8d7b445→1eb92bb ("fix: chat WS resolves URL from baseUrl like REST", src/api/chatSocket.ts only); tree clean, 22 beads ready, build-359 the lone in-progress item.
+
+## Session: reference-img decode (2026-09-13)
+
+Q: Decode the handwritten "Inbox" list in sidebar_project/Reference img.jpeg into work items?
+A: (prompt written for item 1 — the 2-click sidebar bug — as a self-contained handoff: reproduce-first method, 5 ranked hypotheses led by the `conn.value !== "ok"` early return in chat.ts:72, acceptance criteria + evidence required) — 8 items: (1) 1-click session open, (2) model picker + thinking levels, (3) ZDR header, (4) arrow from 2+3 → while generating answer = pending → write a pending-change map, (5) Cloudflare Access, (6) shared types (explore), (7) parallel GETs instead of sequential fetchView() (explore), (8) isStreaming → mid-turn errors; code evidence: projectsApi.fetchView() is a sequential for-await loop, isStreaming() in chat.ts is dead code, setSessionThinking never applies to an already-open handle (open() early-returns when modelId matches), zdrOn is hardcoded true with no GET endpoint, and beads build-359 + build-gw6.5.1 are stale-open despite landing in 7458665 / 1af2ad5.
+
+
+
+## Session: pending-map prompt (2026-09-13)
+
+Q: Write the handoff prompt for notebook item 4 (model/thinking/ZDR while generating → "pending, write map")?
+A: Spec'd as a pending map in sessions.ts (model/thinking per session key + one global ZDR flag) that intercepts selection changes only while chat.isStreaming(key), shows a "pending" badge on the Composer pills / Sidebar ZDR, and flushes via closeTurn(key) with parallel PATCHes at turn end — plus the must-fix that piSession.open():251 early-returns the cached handle so setThinkingLevel never applies to a live conversation, and the ZDR GET endpoint + rollback fix (build-1y9) needed to seed the toggle.
+
+Q: Revise the item-4 prompt — owner said "model selection + thinking levels alone, no ZDR, no code map, specify problem + method only"?
+A: Cut ZDR, context, code map, and the decisions block; kept the owner's prompt shape (report → run → Method → Acceptance → Guardrails → Report back) with one line for the server-side thinking-apply defect.
+
+## Session: build-2on sidebar first-click fix (2026-09-14)
+
+Q: Fix "2 clicks on the sidebar to view a session" — first click sticks on loading?
+A: drawer() in chat.ts returned the raw pre-proxy object on first creation, so loadHistory's d.loading/d.messages mutations bypassed Vue reactivity (data loaded, UI never re-rendered); wrapping the fresh drawer in reactive() before storing fixed it — first click on any thread now renders on cold load, build-2on filed+verified, pnpm build clean.
+
+Q: Explain the drawer reactivity bypass better?
+A: Vue 3 only tracks writes through its Proxy — drawer() returned the raw pre-proxy object on first creation, so loadHistory's d.loading/d.messages writes fired no triggers and the chat-pane computeds stayed cached on "loading"; the second click got the proxied object from the map and worked, and wrapping the fresh drawer in reactive() before storing makes the local handle the proxy from birth.
+
+Q: Why is a proxy needed at all for the drawer reactivity?
+A: A plain JS assignment is unobservable, so Vue uses a Proxy's get/set traps to register who reads which property during render and to notify them on write; the tracking table is keyed by the proxy identity, so writes on the raw target (what drawer() used to return on first creation) are invisible, and the fix was simply making the local handle the proxied identity via reactive().
+
+Q: What exactly changed in the code for the drawer fix?
+A: One creation-site change in chat.ts drawer(): the fresh drawer literal is now wrapped in reactive({…}) as LiveState before being stored in the live map, so the local handle d is the tracked proxy from first creation — all write sites (loadHistory/send/abort) are unchanged; the cast is types-only because UnwrapNestedRefs strips the ChatSocket class fields.

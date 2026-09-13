@@ -38,7 +38,12 @@ const live = reactive<Record<string, LiveState>>({});
 function drawer(key: string): LiveState {
   let d = live[key];
   if (!d) {
-    d = {
+    // Wrap in reactive() BEFORE storing: the local handle must be the same
+    // proxy Vue tracks. If we store the raw object and return it, every
+    // mutation on first creation (d.loading, d.messages, …) bypasses
+    // reactivity and the UI never re-renders — the "first click shows
+    // loading forever, second click works" bug (build-2on).
+    d = reactive({
       messages: [],
       loading: false,
       liveText: "",
@@ -46,7 +51,7 @@ function drawer(key: string): LiveState {
       streaming: false,
       socket: null,
       abortFallback: null,
-    };
+    }) as LiveState;
     live[key] = d;
   }
   return d;

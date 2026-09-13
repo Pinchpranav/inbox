@@ -118,7 +118,6 @@ function onThinkingKeydown(e: KeyboardEvent) {
         v-model="draft"
         class="input"
         :placeholder="streaming ? 'Generating…' : 'Message. Enter to send, Shift+Enter for newline.'"
-        :disabled="streaming"
         rows="1"
         @keydown="onKeydown"
       />

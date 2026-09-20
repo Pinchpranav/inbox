@@ -12,12 +12,17 @@
 // ZDR (zero data retention) is a GLOBAL toggle: when on, every request carries
 // the x-cmd-zdr: 1 header (re-registers the provider — no restart needed).
 //
+// Extensions: index.ts decides which optional pi extensions to load and injects them as
+// plain data (opts.extensions). This file only applies them — their paths to the resource
+// loader, their tool names to the session — so it never learns which extensions exist,
+// or where that list came from.
+//
 // The relay (relay.ts) handles event capture + persistence; it subscribes to
 // the session this manager opens.
 //
 // ── FLOW (who calls what) ─────────────────────────────────────────────
 //   index.ts (entry, build-5ei):
-//     const manager = await PiSessionManager.create(store, { agentDir, cwd })
+//     const manager = await PiSessionManager.create(store, { agentDir, cwd, extensions })
 //     ... on shutdown: manager.disposeAll()
 //   chat.ts (WS route, build-cqf):
 //     const handle = await manager.open(sessionKey, projectDir)  // per prompt
@@ -76,12 +81,21 @@ interface AgentMessageLike {
  * Config for PiSessionManager.create(). Supplied by index.ts.
  * agentDir = isolated pi config dir (never ~/.pi/agent); cwd = default
  * project dir for execution.
+ *
+ * `extensions` is deliberately plain data: the session manager applies the list but
+ * has no idea which extensions exist, or where the list came from.
  */
 export interface PiSessionManagerOpts {
   agentDir: string;
   cwd: string;
   modelProvider?: string;
   modelId?: string;
+  extensions: {
+    /** Extension entry points handed to the resource loader. */
+    paths: string[];
+    /** Tool names those extensions contribute, enabled on every session. */
+    toolNames: string[];
+  };
 }
 
 /**
@@ -127,8 +141,17 @@ export class PiSessionManager {
     await this.registerCommandCode();
     await this.modelRuntime.setRuntimeApiKey("command-code", process.env.COMMANDCODE_API_KEY ?? "");
 
-    this.loader = new DefaultResourceLoader({ agentDir: this.opts.agentDir, cwd: this.opts.cwd });
+    this.loader = new DefaultResourceLoader({
+      agentDir: this.opts.agentDir,
+      cwd: this.opts.cwd,
+      additionalExtensionPaths: this.opts.extensions.paths,
+    });
     await this.loader.reload();
+    // Load failures are reported, not fatal — an extension that won't load just means
+    // the agent has fewer tools. The loader is ours, so its errors are ours to report.
+    for (const { path, error } of this.loader.getExtensions().errors) {
+      console.error(`[extensions] failed to load ${path}: ${error}`);
+    }
   }
 
   /**
@@ -264,7 +287,7 @@ export class PiSessionManager {
       sessionManager: SessionManager.inMemory(),
       cwd: projectDir,
       model,
-      tools: ["read", "bash", "write", "edit"], // main agent tools
+      tools: ["read", "bash", "write", "edit", ...this.opts.extensions.toolNames], // core tools + injected extensions
     });
 
     // Apply thinking level (off when unset). setThinkingLevel clamps to what the model supports.

@@ -2,8 +2,17 @@
 //
 // Sourced from pi-commandcode-provider (MIT,
 // https://github.com/patlux/pi-commandcode-provider, v0.5.1) and the
-// command-code@1.36.0 bundled model catalog (verified against the npm
-// package's dist/bundled/command-code-knowledge/reference/models.md).
+// command-code@1.54.0 bundled model catalog (verified against the npm
+// package's dist/bundled/command-code-knowledge/reference/models.md and the
+// provider's generated src/commandcode-catalog.ts, which is the source of
+// truth for input modalities / reasoning / efforts).
+//
+// These three tables are a deliberate, exact snapshot of upstream rather than
+// a hand-maintained list: when upstream ships a model (e.g.
+// `deepseek/deepseek-v4.1-flash`, the current DeepSeek vision model), the
+// snapshot has to be re-synced or that model silently degrades to text-only /
+// no selectable thinking level. Compare against
+// `commandcode-catalog.ts` before editing by hand.
 // Zero runtime dependencies.
 //
 // Scope:
@@ -50,11 +59,8 @@ export type CommandCodeInputType = "text" | "image";
  * upstream evidence.
  */
 export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCodeInputType[]>> = {
-  "MiniMaxAI/MiniMax-M3": ["text", "image"],
-  "Qwen/Qwen3.6-Plus": ["text", "image"],
-  "Qwen/Qwen3.7-Flash": ["text", "image"],
-  "Qwen/Qwen3.7-Plus": ["text", "image"],
   "claude-fable-5": ["text", "image"],
+  "claude-fable-5-1": ["text", "image"],
   "claude-haiku-4-5-20251001": ["text", "image"],
   "claude-opus-4-7": ["text", "image"],
   "claude-opus-4-8": ["text", "image"],
@@ -62,11 +68,15 @@ export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCod
   "claude-sonnet-4-6": ["text", "image"],
   "claude-sonnet-5": ["text", "image"],
   "deepseek/deepseek-v4-flash-vision-exp": ["text", "image"],
+  // V4.1 Flash is the current DeepSeek vision model (the `-vision-exp` id above
+  // is the older experimental preview of the same capability).
+  "deepseek/deepseek-v4.1-flash": ["text", "image"],
   "google/gemini-3.1-flash-lite": ["text", "image"],
   "google/gemini-3.5-flash": ["text", "image"],
   "google/gemini-3.5-flash-lite": ["text", "image"],
   "google/gemini-3.6-flash": ["text", "image"],
   "google/gemini-3.7-flash": ["text", "image"],
+  "google/gemini-3.8-flash": ["text", "image"],
   "gpt-5.3-codex": ["text", "image"],
   "gpt-5.4": ["text", "image"],
   "gpt-5.4-mini": ["text", "image"],
@@ -74,22 +84,31 @@ export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCod
   "gpt-5.6-luna": ["text", "image"],
   "gpt-5.6-sol": ["text", "image"],
   "gpt-5.6-terra": ["text", "image"],
+  "gpt-6-astra": ["text", "image"],
   "meta/muse-spark-1.1": ["text", "image"],
   "meta/muse-spark-1.2": ["text", "image"],
   "meta/muse-spark-1.2-contributor": ["text", "image"],
+  "meta/muse-spark-1.3": ["text", "image"],
+  "meta/muse-spark-1.3-contributor": ["text", "image"],
+  "MiniMaxAI/MiniMax-M3": ["text", "image"],
   "moonshotai/Kimi-K2.5": ["text", "image"],
   "moonshotai/Kimi-K2.6": ["text", "image"],
   "moonshotai/Kimi-K2.7-Code": ["text", "image"],
   "moonshotai/Kimi-K2.7-Code-Highspeed": ["text", "image"],
   "moonshotai/Kimi-K3": ["text", "image"],
+  "Qwen/Qwen3.6-Plus": ["text", "image"],
+  "Qwen/Qwen3.7-Flash": ["text", "image"],
+  "Qwen/Qwen3.7-Plus": ["text", "image"],
   "Qwen/Qwen3.8-27B": ["text", "image"],
   "Qwen/Qwen3.8-Flash": ["text", "image"],
   "Qwen/Qwen3.8-Max": ["text", "image"],
+  "Qwen/Qwen3.8-Max-0902": ["text", "image"],
   "sakana/fugu-ultra": ["text", "image"],
   "stepfun/Step-3.7-Flash": ["text", "image"],
   "thinkingmachines/inkling": ["text", "image"],
   "thinkingmachines/inkling-small": ["text", "image"],
   "xai/grok-4.5": ["text", "image"],
+  "xai/grok-4.6": ["text", "image"],
   "xiaomi/mimo-v2.5": ["text", "image"],
   "z-ai/glm-5.3-flash": ["text", "image"],
 };
@@ -110,26 +129,30 @@ export function modelSupportsImageInput(modelId: string): boolean {
  * Models that reason at all (with or without selectable efforts).
  *
  * The Provider API does not expose this. Snapshot of `MODEL_REASONING` from
- * the provider's synced commandcode-catalog.ts (command-code@1.32.2), which
+ * the provider's synced commandcode-catalog.ts (command-code@1.54.0), which
  * lists reasoning models even when Command Code chooses their depth
  * automatically (no `MODEL_EFFORTS` entry). A model in this set but not in
  * MODEL_EFFORTS reasons with automatic depth.
  */
 export const MODEL_REASONING: Readonly<Record<string, true>> = {
   "claude-fable-5": true,
+  "claude-fable-5-1": true,
   "claude-opus-4-7": true,
   "claude-opus-4-8": true,
   "claude-opus-5": true,
   "claude-sonnet-4-6": true,
   "claude-sonnet-5": true,
   "deepseek/deepseek-v4-flash": true,
+  "deepseek/deepseek-v4-flash-fast": true,
   "deepseek/deepseek-v4-flash-vision-exp": true,
   "deepseek/deepseek-v4-pro": true,
+  "deepseek/deepseek-v4.1-flash": true,
   "google/gemini-3.1-flash-lite": true,
   "google/gemini-3.5-flash": true,
   "google/gemini-3.5-flash-lite": true,
   "google/gemini-3.6-flash": true,
   "google/gemini-3.7-flash": true,
+  "google/gemini-3.8-flash": true,
   "gpt-5.3-codex": true,
   "gpt-5.4": true,
   "gpt-5.4-mini": true,
@@ -137,9 +160,14 @@ export const MODEL_REASONING: Readonly<Record<string, true>> = {
   "gpt-5.6-luna": true,
   "gpt-5.6-sol": true,
   "gpt-5.6-terra": true,
+  "gpt-6-astra": true,
+  "inclusionai/ling-3.0-flash-sante:free": true,
+  "meituan/LongCat-2.0:free": true,
   "meta/muse-spark-1.1": true,
   "meta/muse-spark-1.2": true,
   "meta/muse-spark-1.2-contributor": true,
+  "meta/muse-spark-1.3": true,
+  "meta/muse-spark-1.3-contributor": true,
   "MiniMaxAI/MiniMax-M3": true,
   "moonshotai/Kimi-K2.7-Code": true,
   "moonshotai/Kimi-K2.7-Code-Highspeed": true,
@@ -154,18 +182,19 @@ export const MODEL_REASONING: Readonly<Record<string, true>> = {
   "Qwen/Qwen3.8-27B": true,
   "Qwen/Qwen3.8-Flash": true,
   "Qwen/Qwen3.8-Max": true,
+  "Qwen/Qwen3.8-Max-0902": true,
   "sakana/fugu-ultra": true,
-  "stealth/ox-alpha": true,
   "stepfun/Step-3.5-Flash": true,
   "stepfun/Step-3.7-Flash": true,
   "tencent/hy3-paid": true,
+  "tencent/hy4-preview": true,
   "thinkingmachines/inkling": true,
   "thinkingmachines/inkling-small": true,
   "xai/grok-4.5": true,
   "xai/grok-4.6": true,
+  "z-ai/glm-5.3-flash": true,
   "zai-org/GLM-5.2": true,
   "zai-org/GLM-5.3": true,
-  "z-ai/glm-5.3-flash": true,
 };
 
 /** Whether a model id is a known reasoning model (has a MODEL_REASONING entry). */
@@ -184,10 +213,11 @@ type CommandCodeReasoningEffort = Exclude<PiThinkingLevel, "off">;
  * Per-model reasoning efforts supported by Command Code's generate endpoint.
  *
  * The Provider API does not expose reasoning metadata. This is an exact
- * snapshot of `reasoningEfforts` from the command-code@1.36.0 model catalog
- * (published in the generated
- * `dist/bundled/command-code-knowledge/reference/models.md`). Models omitted
- * here let Command Code choose their reasoning depth, matching the CLI.
+ * snapshot of `reasoningEfforts` from the provider's synced
+ * commandcode-catalog.ts (command-code@1.54.0), the same source the CLI's
+ * generated `dist/bundled/command-code-knowledge/reference/models.md`
+ * publishes. Models omitted here let Command Code choose their reasoning
+ * depth, matching the CLI.
  *
  * NOTE: an omitted entry means "no selectable effort", NOT "does not reason"
  * — many `—` models (Kimi, MiniMax, muse-spark, Qwen3.7/3.6, claude-haiku,
@@ -196,16 +226,24 @@ type CommandCodeReasoningEffort = Exclude<PiThinkingLevel, "off">;
  * "does it reason?" set.
  */
 export const MODEL_EFFORTS: Readonly<Record<string, readonly CommandCodeReasoningEffort[]>> = {
-  "Qwen/Qwen3.8-Max": ["low", "medium", "xhigh"],
   "claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
+  "claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
   "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
   "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
   "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
   "claude-sonnet-4-6": ["low", "medium", "high", "xhigh", "max"],
   "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
   "deepseek/deepseek-v4-flash": ["high", "max"],
+  "deepseek/deepseek-v4-flash-fast": ["low", "high", "max"],
   "deepseek/deepseek-v4-flash-vision-exp": ["high", "max"],
   "deepseek/deepseek-v4-pro": ["high", "max"],
+  "deepseek/deepseek-v4.1-flash": ["low", "high", "max"],
+  "google/gemini-3.1-flash-lite": ["low", "medium", "high"],
+  "google/gemini-3.5-flash": ["low", "medium", "high"],
+  "google/gemini-3.5-flash-lite": ["low", "medium", "high"],
+  "google/gemini-3.6-flash": ["low", "medium", "high"],
+  "google/gemini-3.7-flash": ["low", "medium", "high"],
+  "google/gemini-3.8-flash": ["low", "medium", "high"],
   "gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
   "gpt-5.4": ["low", "medium", "high", "xhigh"],
   "gpt-5.4-mini": ["low", "medium", "high"],
@@ -213,14 +251,20 @@ export const MODEL_EFFORTS: Readonly<Record<string, readonly CommandCodeReasonin
   "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
   "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
   "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max"],
-  "google/gemini-3.1-flash-lite": ["low", "medium", "high"],
-  "google/gemini-3.5-flash": ["low", "medium", "high"],
-  "google/gemini-3.5-flash-lite": ["low", "medium", "high"],
-  "google/gemini-3.6-flash": ["low", "medium", "high"],
-  "google/gemini-3.7-flash": ["low", "medium", "high"],
+  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+  "meta/muse-spark-1.1": ["low", "medium", "high", "xhigh"],
+  "meta/muse-spark-1.2": ["low", "medium", "high", "xhigh"],
+  "meta/muse-spark-1.2-contributor": ["low", "medium", "high", "xhigh"],
+  "meta/muse-spark-1.3": ["low", "medium", "high", "xhigh", "max"],
+  "meta/muse-spark-1.3-contributor": ["low", "medium", "high", "xhigh"],
+  "MiniMaxAI/MiniMax-M3": ["low", "medium", "high"],
+  "moonshotai/Kimi-K3": ["low", "high", "max"],
   "Qwen/Qwen3.8-27B": ["low", "medium", "xhigh"],
   "Qwen/Qwen3.8-Flash": ["low", "medium", "xhigh"],
+  "Qwen/Qwen3.8-Max": ["low", "medium", "xhigh"],
+  "Qwen/Qwen3.8-Max-0902": ["low", "medium", "xhigh"],
   "sakana/fugu-ultra": ["high", "xhigh"],
+  "tencent/hy4-preview": ["low", "medium", "high"],
   "xai/grok-4.5": ["low", "medium", "high"],
   "xai/grok-4.6": ["low", "medium", "high", "xhigh"],
   "z-ai/glm-5.3-flash": ["low", "high", "max"],

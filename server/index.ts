@@ -3,7 +3,8 @@
 //
 // ── FLOW (assembly line) ─────────────────────────────────────────────
 //   main() -> StateStore(dbPath) + rebuildProjections()
-//           -> PiSessionManager.create(store, { agentDir, cwd })   (async)
+//           -> resolvePiExtensions()                               (optional extras)
+//           -> PiSessionManager.create(store, { agentDir, cwd, extensions })   (async)
 //           -> buildApp({ store, manager }) -> { app, injectWebSocket }
 //           -> serve({ fetch: app.fetch, port })                   (HTTP)
 //           -> injectWebSocket(server)                             (WS, AFTER serve)
@@ -22,6 +23,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { Hono } from "hono";
 import { StateStore } from "./stateStore.ts";
 import { PiSessionManager } from "./piSession.ts";
+import { resolvePiExtensions } from "./piExtensions.ts";
 import { createProjectsRouter } from "./routes/projects.ts";
 import { createSessionsRouter } from "./routes/sessions.ts";
 import { createInboxRouter } from "./routes/inbox.ts";
@@ -80,9 +82,15 @@ export async function main(deps: MainDeps): Promise<{ app: Hono; store: StateSto
   const store = new StateStore(deps.dbPath);
   store.rebuildProjections();
 
+  // Optional pi extensions (browser tools, and any added later). Resolved here so the
+  // manager receives its collaborators instead of reaching for process.env itself —
+  // which extensions this app loads is app assembly, not session mechanics.
+  const extensions = resolvePiExtensions();
+
   const manager = await PiSessionManager.create(store, {
     agentDir: deps.agentDir,
     cwd: deps.cwd,
+    extensions,
   });
 
   const { app, injectWebSocket } = buildApp({ store, manager });

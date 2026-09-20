@@ -43,7 +43,7 @@ export interface Session {
   state: State;
   noInbox: boolean;
   lastTouchedAt: number | null;
-  /** Stored model slug (e.g. "deepseek/deepseek-v4-flash"). null → manager default. */
+  /** Stored model slug (e.g. "deepseek/deepseek-v4.1-flash"). null → manager default. */
   modelId?: string | null;
   /** Stored thinking level (off|minimal|low|medium|high|xhigh|max). null → "off". */
   thinkingLevel?: string | null;

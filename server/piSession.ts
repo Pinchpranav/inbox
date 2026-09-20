@@ -8,7 +8,8 @@
 //   - isolated: custom agentDir so we never touch ~/.pi/agent
 //
 // Provider: Command Code (command-code). Models are fetched live at startup
-// (fetchModels, in-memory, no fallback); the default model is deepseek-v4-flash.
+// (fetchModels, in-memory, no fallback, curated to the models we offer); the default
+// model is deepseek-v4.1-flash.
 // ZDR (zero data retention) is a GLOBAL toggle: when on, every request carries
 // the x-cmd-zdr: 1 header (re-registers the provider — no restart needed).
 //
@@ -38,7 +39,7 @@ import {
   DefaultResourceLoader,
 } from "@earendil-works/pi-coding-agent";
 import type { StateStore, Message } from "./stateStore.ts";
-import { fetchModels, inputModalitiesForModel, thinkingMetadataForModel, type CommandCodeModel, type ModelCatalogEntry } from "./commandCode.ts";
+import { fetchModels, inputModalitiesForModel, thinkingLevelMapForModel, DEFAULT_MODEL_ID, type CommandCodeModel, type ModelCatalogEntry } from "./commandCode.ts";
 
 /** Command Code Provider API base (OpenAI-compatible). Env override for tests. */
 const COMMANDCODE_API_BASE = process.env.COMMANDCODE_API_BASE ?? "https://api.commandcode.ai/provider/v1";
@@ -117,8 +118,9 @@ export class PiSessionManager {
   private constructor(store: StateStore, private opts: PiSessionManagerOpts) {
     this.store = store;
     this.modelProvider = opts.modelProvider ?? "command-code";
-    // Must match a live Command Code model id (e.g. "deepseek/deepseek-v4-flash").
-    this.modelId = opts.modelId ?? "deepseek/deepseek-v4-flash";
+    // Must be one of CURATED_MODELS (commandCode.ts): anything else is not registered
+    // with the provider, so open() could not resolve it.
+    this.modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   }
 
   /**
@@ -182,7 +184,7 @@ export class PiSessionManager {
         id: m.id,
         name: m.name,
         reasoning: m.reasoning,
-        ...(thinkingMetadataForModel(m.id) ?? {}),
+        thinkingLevelMap: thinkingLevelMapForModel(m.id),
         input: [...inputModalitiesForModel(m.id)],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: m.contextWindow,
@@ -209,7 +211,7 @@ export class PiSessionManager {
   /**
    * The model catalog as served by GET /api/models (build-gw6.5.1). Pure composition
    * over commandCode.ts helpers — no new model logic. `thinkingLevelMap` comes from the
-   * per-model hardcoded table (the API doesn't expose it); a model with no reasoning gets
+   * per-model curated table (the API doesn't expose it); a model with no reasoning gets
    * `undefined`. The separate `reasoning` boolean was dropped — "reasons?" is exactly
    * "has a thinkingLevelMap?".
    */
@@ -217,7 +219,7 @@ export class PiSessionManager {
     return this.models.map((m) => ({
       id: m.id,
       name: m.name,
-      thinkingLevelMap: thinkingMetadataForModel(m.id)?.thinkingLevelMap ?? undefined,
+      thinkingLevelMap: thinkingLevelMapForModel(m.id),
       input: inputModalitiesForModel(m.id),
     }));
   }

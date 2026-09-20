@@ -1,279 +1,26 @@
-// commandCode.ts — vendored Command Code provider data + model fetch.
+// commandCode.ts — our curated view of the Command Code provider.
 //
-// Sourced from pi-commandcode-provider (MIT,
-// https://github.com/patlux/pi-commandcode-provider, v0.5.1) and the
-// command-code@1.54.0 bundled model catalog (verified against the npm
-// package's dist/bundled/command-code-knowledge/reference/models.md and the
-// provider's generated src/commandcode-catalog.ts, which is the source of
-// truth for input modalities / reasoning / efforts).
+// Opinionated on purpose. The provider serves ~70 models; we offer the three in
+// CURATED_MODELS below.
+// 
+// The live /models fetch supplies each model's name and context window
+// (the API knows those, so they stay current), while a curated row carries only what
+// the API does not expose — that the model exists for us at all, what it accepts, and
+// the thinking levels it takes.
 //
-// These three tables are a deliberate, exact snapshot of upstream rather than
-// a hand-maintained list: when upstream ships a model (e.g.
-// `deepseek/deepseek-v4.1-flash`, the current DeepSeek vision model), the
-// snapshot has to be re-synced or that model silently degrades to text-only /
-// no selectable thinking level. Compare against
-// `commandcode-catalog.ts` before editing by hand.
-// Zero runtime dependencies.
+// To add a model: add a row using the exact live id, take `efforts` from the
+// provider's generated `commandcode-catalog.ts`, and confirm it shows up in
+// GET /api/models. Nothing else changes.
 //
-// Scope:
-//   - static data tables: input modalities, reasoning efforts, thinking map
-//   - fetchModels(): GET /provider/v1/models with a timeout, returns the list
-//     in memory. NO file cache, NO fallback, NO cooldown — if the fetch
-//     fails it throws and that's it. The caller (piSession wiring, gw6.4)
-//     holds the result in memory and decides when to refetch.
-//
-// MIT License, Copyright (c) 2025 Pat Woz — vendored with attribution.
-
-// ── Public model shape ─────────────────────────────────────────────
-
-/** A model as exposed by the Command Code provider catalog. */
-export interface CommandCodeModel {
-  id: string;
-  name: string;
-  reasoning: boolean;
-  contextWindow: number;
-  maxTokens: number;
-}
-
-/**
- * A model as served to the UI by `GET /api/models` (build-gw6.5.1).
- * `thinkingLevelMap` comes from the per-model hardcoded table (the live API
- * does not expose it); `undefined` = this model does not reason. There is no
- * separate `reasoning` boolean — "does it reason?" == "has a thinkingLevelMap?".
- */
-export interface ModelCatalogEntry {
-  id: string;
-  name: string;
-  thinkingLevelMap: ThinkingMetadata["thinkingLevelMap"] | undefined;
-  input: readonly CommandCodeInputType[];
-}
-
-// ── Input modalities ───────────────────────────────────────────────
-
 export type CommandCodeInputType = "text" | "image";
 
-/**
- * Model input modalities from the command-code@1.36.0 bundled catalog
- * (and the provider's synced commandcode-catalog.ts). Models omitted here
- * remain text-only so newly discovered IDs never claim image support without
- * upstream evidence.
- */
-export const MODEL_INPUT_MODALITIES: Readonly<Record<string, readonly CommandCodeInputType[]>> = {
-  "claude-fable-5": ["text", "image"],
-  "claude-fable-5-1": ["text", "image"],
-  "claude-haiku-4-5-20251001": ["text", "image"],
-  "claude-opus-4-7": ["text", "image"],
-  "claude-opus-4-8": ["text", "image"],
-  "claude-opus-5": ["text", "image"],
-  "claude-sonnet-4-6": ["text", "image"],
-  "claude-sonnet-5": ["text", "image"],
-  "deepseek/deepseek-v4-flash-vision-exp": ["text", "image"],
-  // V4.1 Flash is the current DeepSeek vision model (the `-vision-exp` id above
-  // is the older experimental preview of the same capability).
-  "deepseek/deepseek-v4.1-flash": ["text", "image"],
-  "google/gemini-3.1-flash-lite": ["text", "image"],
-  "google/gemini-3.5-flash": ["text", "image"],
-  "google/gemini-3.5-flash-lite": ["text", "image"],
-  "google/gemini-3.6-flash": ["text", "image"],
-  "google/gemini-3.7-flash": ["text", "image"],
-  "google/gemini-3.8-flash": ["text", "image"],
-  "gpt-5.3-codex": ["text", "image"],
-  "gpt-5.4": ["text", "image"],
-  "gpt-5.4-mini": ["text", "image"],
-  "gpt-5.5": ["text", "image"],
-  "gpt-5.6-luna": ["text", "image"],
-  "gpt-5.6-sol": ["text", "image"],
-  "gpt-5.6-terra": ["text", "image"],
-  "gpt-6-astra": ["text", "image"],
-  "meta/muse-spark-1.1": ["text", "image"],
-  "meta/muse-spark-1.2": ["text", "image"],
-  "meta/muse-spark-1.2-contributor": ["text", "image"],
-  "meta/muse-spark-1.3": ["text", "image"],
-  "meta/muse-spark-1.3-contributor": ["text", "image"],
-  "MiniMaxAI/MiniMax-M3": ["text", "image"],
-  "moonshotai/Kimi-K2.5": ["text", "image"],
-  "moonshotai/Kimi-K2.6": ["text", "image"],
-  "moonshotai/Kimi-K2.7-Code": ["text", "image"],
-  "moonshotai/Kimi-K2.7-Code-Highspeed": ["text", "image"],
-  "moonshotai/Kimi-K3": ["text", "image"],
-  "Qwen/Qwen3.6-Plus": ["text", "image"],
-  "Qwen/Qwen3.7-Flash": ["text", "image"],
-  "Qwen/Qwen3.7-Plus": ["text", "image"],
-  "Qwen/Qwen3.8-27B": ["text", "image"],
-  "Qwen/Qwen3.8-Flash": ["text", "image"],
-  "Qwen/Qwen3.8-Max": ["text", "image"],
-  "Qwen/Qwen3.8-Max-0902": ["text", "image"],
-  "sakana/fugu-ultra": ["text", "image"],
-  "stepfun/Step-3.7-Flash": ["text", "image"],
-  "thinkingmachines/inkling": ["text", "image"],
-  "thinkingmachines/inkling-small": ["text", "image"],
-  "xai/grok-4.5": ["text", "image"],
-  "xai/grok-4.6": ["text", "image"],
-  "xiaomi/mimo-v2.5": ["text", "image"],
-  "z-ai/glm-5.3-flash": ["text", "image"],
-};
+export type CommandCodeReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-const TEXT_INPUT_ONLY: readonly CommandCodeInputType[] = ["text"];
+/** pi's thinking ladder. "off" is the absence of thinking, never an effort. */
+export type PiThinkingLevel = "off" | CommandCodeReasoningEffort;
 
-/** Modalities a model accepts. Unknown/new models default to text-only. */
-export function inputModalitiesForModel(modelId: string): readonly CommandCodeInputType[] {
-  return MODEL_INPUT_MODALITIES[modelId] ?? TEXT_INPUT_ONLY;
-}
-
-/** Whether a model can accept image input. */
-export function modelSupportsImageInput(modelId: string): boolean {
-  return inputModalitiesForModel(modelId).includes("image");
-}
-
-/**
- * Models that reason at all (with or without selectable efforts).
- *
- * The Provider API does not expose this. Snapshot of `MODEL_REASONING` from
- * the provider's synced commandcode-catalog.ts (command-code@1.54.0), which
- * lists reasoning models even when Command Code chooses their depth
- * automatically (no `MODEL_EFFORTS` entry). A model in this set but not in
- * MODEL_EFFORTS reasons with automatic depth.
- */
-export const MODEL_REASONING: Readonly<Record<string, true>> = {
-  "claude-fable-5": true,
-  "claude-fable-5-1": true,
-  "claude-opus-4-7": true,
-  "claude-opus-4-8": true,
-  "claude-opus-5": true,
-  "claude-sonnet-4-6": true,
-  "claude-sonnet-5": true,
-  "deepseek/deepseek-v4-flash": true,
-  "deepseek/deepseek-v4-flash-fast": true,
-  "deepseek/deepseek-v4-flash-vision-exp": true,
-  "deepseek/deepseek-v4-pro": true,
-  "deepseek/deepseek-v4.1-flash": true,
-  "google/gemini-3.1-flash-lite": true,
-  "google/gemini-3.5-flash": true,
-  "google/gemini-3.5-flash-lite": true,
-  "google/gemini-3.6-flash": true,
-  "google/gemini-3.7-flash": true,
-  "google/gemini-3.8-flash": true,
-  "gpt-5.3-codex": true,
-  "gpt-5.4": true,
-  "gpt-5.4-mini": true,
-  "gpt-5.5": true,
-  "gpt-5.6-luna": true,
-  "gpt-5.6-sol": true,
-  "gpt-5.6-terra": true,
-  "gpt-6-astra": true,
-  "inclusionai/ling-3.0-flash-sante:free": true,
-  "meituan/LongCat-2.0:free": true,
-  "meta/muse-spark-1.1": true,
-  "meta/muse-spark-1.2": true,
-  "meta/muse-spark-1.2-contributor": true,
-  "meta/muse-spark-1.3": true,
-  "meta/muse-spark-1.3-contributor": true,
-  "MiniMaxAI/MiniMax-M3": true,
-  "moonshotai/Kimi-K2.7-Code": true,
-  "moonshotai/Kimi-K2.7-Code-Highspeed": true,
-  "moonshotai/Kimi-K3": true,
-  "nvidia/nemotron-3-ultra-550b-a55b": true,
-  "poolside/laguna-s-2.1-free": true,
-  "Qwen/Qwen3.6-Max-Preview": true,
-  "Qwen/Qwen3.6-Plus": true,
-  "Qwen/Qwen3.7-Flash": true,
-  "Qwen/Qwen3.7-Max": true,
-  "Qwen/Qwen3.7-Plus": true,
-  "Qwen/Qwen3.8-27B": true,
-  "Qwen/Qwen3.8-Flash": true,
-  "Qwen/Qwen3.8-Max": true,
-  "Qwen/Qwen3.8-Max-0902": true,
-  "sakana/fugu-ultra": true,
-  "stepfun/Step-3.5-Flash": true,
-  "stepfun/Step-3.7-Flash": true,
-  "tencent/hy3-paid": true,
-  "tencent/hy4-preview": true,
-  "thinkingmachines/inkling": true,
-  "thinkingmachines/inkling-small": true,
-  "xai/grok-4.5": true,
-  "xai/grok-4.6": true,
-  "z-ai/glm-5.3-flash": true,
-  "zai-org/GLM-5.2": true,
-  "zai-org/GLM-5.3": true,
-};
-
-/** Whether a model id is a known reasoning model (has a MODEL_REASONING entry). */
-function isReasoningModel(modelId: string): boolean {
-  return MODEL_REASONING[modelId] !== undefined;
-}
-
-// ── Thinking levels (pi's ModelThinkingLevel) ──────────────────────
-
-/** pi's canonical thinking-level ladder. */
-export type PiThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-
-type CommandCodeReasoningEffort = Exclude<PiThinkingLevel, "off">;
-
-/**
- * Per-model reasoning efforts supported by Command Code's generate endpoint.
- *
- * The Provider API does not expose reasoning metadata. This is an exact
- * snapshot of `reasoningEfforts` from the provider's synced
- * commandcode-catalog.ts (command-code@1.54.0), the same source the CLI's
- * generated `dist/bundled/command-code-knowledge/reference/models.md`
- * publishes. Models omitted here let Command Code choose their reasoning
- * depth, matching the CLI.
- *
- * NOTE: an omitted entry means "no selectable effort", NOT "does not reason"
- * — many `—` models (Kimi, MiniMax, muse-spark, Qwen3.7/3.6, claude-haiku,
- * stepfun, nemotron, poolside, tencent/hy3) still reason with Command Code
- * deciding depth automatically. See `MODEL_REASONING` for the authoritative
- * "does it reason?" set.
- */
-export const MODEL_EFFORTS: Readonly<Record<string, readonly CommandCodeReasoningEffort[]>> = {
-  "claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
-  "claude-fable-5-1": ["low", "medium", "high", "xhigh", "max"],
-  "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
-  "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
-  "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
-  "claude-sonnet-4-6": ["low", "medium", "high", "xhigh", "max"],
-  "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
-  "deepseek/deepseek-v4-flash": ["high", "max"],
-  "deepseek/deepseek-v4-flash-fast": ["low", "high", "max"],
-  "deepseek/deepseek-v4-flash-vision-exp": ["high", "max"],
-  "deepseek/deepseek-v4-pro": ["high", "max"],
-  "deepseek/deepseek-v4.1-flash": ["low", "high", "max"],
-  "google/gemini-3.1-flash-lite": ["low", "medium", "high"],
-  "google/gemini-3.5-flash": ["low", "medium", "high"],
-  "google/gemini-3.5-flash-lite": ["low", "medium", "high"],
-  "google/gemini-3.6-flash": ["low", "medium", "high"],
-  "google/gemini-3.7-flash": ["low", "medium", "high"],
-  "google/gemini-3.8-flash": ["low", "medium", "high"],
-  "gpt-5.3-codex": ["low", "medium", "high", "xhigh"],
-  "gpt-5.4": ["low", "medium", "high", "xhigh"],
-  "gpt-5.4-mini": ["low", "medium", "high"],
-  "gpt-5.5": ["low", "medium", "high", "xhigh"],
-  "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
-  "gpt-5.6-sol": ["low", "medium", "high", "xhigh", "max"],
-  "gpt-5.6-terra": ["low", "medium", "high", "xhigh", "max"],
-  "gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
-  "meta/muse-spark-1.1": ["low", "medium", "high", "xhigh"],
-  "meta/muse-spark-1.2": ["low", "medium", "high", "xhigh"],
-  "meta/muse-spark-1.2-contributor": ["low", "medium", "high", "xhigh"],
-  "meta/muse-spark-1.3": ["low", "medium", "high", "xhigh", "max"],
-  "meta/muse-spark-1.3-contributor": ["low", "medium", "high", "xhigh"],
-  "MiniMaxAI/MiniMax-M3": ["low", "medium", "high"],
-  "moonshotai/Kimi-K3": ["low", "high", "max"],
-  "Qwen/Qwen3.8-27B": ["low", "medium", "xhigh"],
-  "Qwen/Qwen3.8-Flash": ["low", "medium", "xhigh"],
-  "Qwen/Qwen3.8-Max": ["low", "medium", "xhigh"],
-  "Qwen/Qwen3.8-Max-0902": ["low", "medium", "xhigh"],
-  "sakana/fugu-ultra": ["high", "xhigh"],
-  "tencent/hy4-preview": ["low", "medium", "high"],
-  "xai/grok-4.5": ["low", "medium", "high"],
-  "xai/grok-4.6": ["low", "medium", "high", "xhigh"],
-  "z-ai/glm-5.3-flash": ["low", "high", "max"],
-  "zai-org/GLM-5.2": ["high", "max"],
-  "zai-org/GLM-5.3": ["low", "high", "max"],
-};
-
-export const PI_THINKING_LEVELS: readonly PiThinkingLevel[] = [
-  "off",
+/** The ladder without "off" — pi's thinkingLevelMap never carries "off". */
+const THINKING_LEVELS: readonly CommandCodeReasoningEffort[] = [
   "minimal",
   "low",
   "medium",
@@ -282,47 +29,74 @@ export const PI_THINKING_LEVELS: readonly PiThinkingLevel[] = [
   "max",
 ];
 
+/** A model we offer: what it accepts, and the thinking levels it takes. */
+interface CuratedModel {
+  input: readonly CommandCodeInputType[];
+  /** Selectable reasoning efforts; an empty list means the model does not reason. */
+  efforts: readonly CommandCodeReasoningEffort[];
+}
+
+/** The only models this app offers. Ids must be exact, live Command Code ids. */
+export const CURATED_MODELS: Readonly<Record<string, CuratedModel>> = {
+  "deepseek/deepseek-v4.1-flash": { input: ["text", "image"], efforts: ["low", "high", "max"] },
+  "z-ai/glm-5.3-flash": { input: ["text", "image"], efforts: ["low", "high", "max"] },
+  "meta/muse-spark-1.3-contributor": {
+    input: ["text", "image"],
+    efforts: ["low", "medium", "high", "xhigh"],
+  },
+};
+
+/** The model a conversation starts on when nothing else is stored. Must be curated. */
+export const DEFAULT_MODEL_ID = "deepseek/deepseek-v4.1-flash";
+
+// ── Model shapes ───────────────────────────────────────────────────
+
+/** A model as fetched from the provider, after curation. */
+export interface CommandCodeModel {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  contextWindow: number;
+  maxTokens: number;
+}
+
+/** A model as served to the UI by `GET /api/models`. */
+export interface ModelCatalogEntry {
+  id: string;
+  name: string;
+  /** undefined when the model does not reason. */
+  thinkingLevelMap: Partial<Record<PiThinkingLevel, string | null>> | undefined;
+  input: readonly CommandCodeInputType[];
+}
+
+// ── Curated lookups ────────────────────────────────────────────────
+
+/** Modalities a model accepts. Non-curated ids never reach here; they default to text. */
+export function inputModalitiesForModel(modelId: string): readonly CommandCodeInputType[] {
+  return CURATED_MODELS[modelId]?.input ?? ["text"];
+}
+
 /**
- * Map pi's thinking-level ladder onto the reasoning efforts a model supports.
- * `"off"` is never in the map (it is the absence of thinking); unsupported
- * levels map to null so the UI can render them disabled.
+ * pi's `Model.thinkingLevelMap`, built from the curated row: each ladder level maps to
+ * the effort to send, or to null when the model does not support it. Undefined when the
+ * model does not reason at all.
+ *
+ * This is the only thinking shape pi reads (an effortMap/mode object does nothing), and
+ * it is also what `GET /api/models` hands the composer pill.
  */
-export function thinkingLevelMapForEfforts(
-  efforts: readonly string[],
-): Partial<Record<PiThinkingLevel, string | null>> {
+export function thinkingLevelMapForModel(
+  modelId: string,
+): Partial<Record<PiThinkingLevel, string | null>> | undefined {
+  const efforts = CURATED_MODELS[modelId]?.efforts;
+  if (!efforts?.length) return undefined;
   const map: Partial<Record<PiThinkingLevel, string | null>> = {};
-  for (const level of PI_THINKING_LEVELS) {
-    if (level === "off") continue;
+  for (const level of THINKING_LEVELS) {
     map[level] = efforts.includes(level) ? level : null;
   }
   return map;
 }
 
-/** Full thinking metadata pi attaches to a model (thinkingLevelMap + effort map). */
-export interface ThinkingMetadata {
-  thinkingLevelMap: Partial<Record<PiThinkingLevel, string | null>>;
-  thinking: {
-    mode: "effort";
-    effortMap: Partial<Record<CommandCodeReasoningEffort, string>>;
-    efforts: readonly CommandCodeReasoningEffort[];
-  };
-}
-
-/** Thinking metadata for a model, or undefined when it isn't a reasoning model. */
-export function thinkingMetadataForModel(modelId: string): ThinkingMetadata | undefined {
-  const efforts = MODEL_EFFORTS[modelId];
-  if (!efforts) return undefined;
-  return {
-    thinkingLevelMap: thinkingLevelMapForEfforts(efforts),
-    thinking: {
-      mode: "effort",
-      effortMap: Object.fromEntries(efforts.map((effort) => [effort, effort])),
-      efforts,
-    },
-  };
-}
-
-// ── Model catalog: fetch (build-gw6.2, simplified) ─────────────────
+// ── Fetch (build-gw6.2) ────────────────────────────────────────────
 
 /** Default Command Code provider models endpoint. */
 export const DEFAULT_MODELS_URL = "https://api.commandcode.ai/provider/v1/models";
@@ -330,7 +104,7 @@ export const DEFAULT_MODELS_URL = "https://api.commandcode.ai/provider/v1/models
 /** Default timeout for a models fetch (ms). */
 export const DEFAULT_MODELS_TIMEOUT_MS = 10_000;
 
-/** Cap on maxTokens we advertise per model (the API returns only contextLength). */
+/** Cap on maxTokens we advertise per model (the API returns only context length). */
 const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
 
 export interface FetchModelsOptions {
@@ -345,63 +119,47 @@ export interface FetchModelsOptions {
 }
 
 /**
- * GET /provider/v1/models → CommandCodeModel[].
+ * GET /provider/v1/models → the curated models the provider still serves.
  *
- * Throws on: HTTP error, malformed body, timeout, or abort. No file cache,
- * no fallback — the caller holds the result in memory and refetches when it
- * wants (gw6.4 wiring). `reasoning` comes from our static MODEL_EFFORTS table
- * (the API does not expose it); `maxTokens` is capped at 64K because the API
- * only reports context length.
+ * Throws on HTTP error, malformed body, timeout, abort, or when not one curated id
+ * exists any more (which means CURATED_MODELS has gone stale, not that the provider is
+ * down). No file cache, no fallback — the caller holds the result in memory (gw6.4).
  */
 export async function fetchModels(options: FetchModelsOptions = {}): Promise<CommandCodeModel[]> {
   const url = options.url ?? DEFAULT_MODELS_URL;
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_MODELS_TIMEOUT_MS;
-  const signal = options.signal ?? AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ?? AbortSignal.timeout(options.timeoutMs ?? DEFAULT_MODELS_TIMEOUT_MS);
 
-  const response = await fetchImpl(url, {
-    headers: { accept: "application/json" },
-    signal,
-  });
+  const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal });
   if (!response.ok) {
     throw new Error(`Failed to fetch Command Code models: ${response.status} ${response.statusText}`);
   }
 
-  const body = (await response.json()) as unknown;
-  if (typeof body !== "object" || body === null || !Array.isArray((body as { data?: unknown }).data)) {
+  const body = (await response.json()) as { data?: unknown };
+  if (!Array.isArray(body.data)) {
     throw new Error("Expected Command Code models response to be { object: 'list', data: [...] }");
   }
 
-  const models = ((body as { data: unknown[] }).data).map((entry) => {
-    const record = entry as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id : "";
-    const name = typeof record.name === "string" ? record.name : id;
-    const contextLength = typeof record.context_length === "number" ? record.context_length : 0;
-    if (!id || contextLength <= 0) {
-      throw new Error(`Expected model entry to have a non-empty id and positive context_length`);
-    }
-    return {
-      id,
-      name,
-      reasoning: isReasoningModel(id),
-      contextWindow: contextLength,
-      maxTokens: Math.min(contextLength, DEFAULT_MAX_OUTPUT_TOKENS),
-    };
-  });
+  const models = (body.data as unknown[])
+    .map((entry): CommandCodeModel => {
+      const record = entry as Record<string, unknown>;
+      const id = typeof record.id === "string" ? record.id : "";
+      const contextWindow = typeof record.context_length === "number" ? record.context_length : 0;
+      if (!id || contextWindow <= 0) {
+        throw new Error("Expected model entry to have a non-empty id and positive context_length");
+      }
+      return {
+        id,
+        name: typeof record.name === "string" ? record.name : id,
+        reasoning: (CURATED_MODELS[id]?.efforts.length ?? 0) > 0,
+        contextWindow,
+        maxTokens: Math.min(contextWindow, DEFAULT_MAX_OUTPUT_TOKENS),
+      };
+    })
+    .filter((model) => model.id in CURATED_MODELS);
 
-  if (models.length === 0) throw new Error("Command Code returned an empty model catalog");
+  if (models.length === 0) {
+    throw new Error(`None of the curated models exist any more: ${Object.keys(CURATED_MODELS).join(", ")}`);
+  }
   return models;
 }
-
-// ── Single namespace export ────────────────────────────────────────
-
-/** Flat namespace so index.ts / tests can import one object. */
-export const COMMAND_CODE = {
-  MODEL_INPUT_MODALITIES,
-  MODEL_EFFORTS,
-  MODEL_REASONING,
-  PI_THINKING_LEVELS,
-  DEFAULT_MODELS_URL,
-  DEFAULT_MODELS_TIMEOUT_MS,
-  fetchModels,
-} as const;

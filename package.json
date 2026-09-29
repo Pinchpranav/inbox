@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@commandcode/pi-commandcode-provider": "^0.3.0",
     "@earendil-works/pi-coding-agent": "latest",
     "@hono/node-server": "latest",
     "@hono/node-ws": "latest",

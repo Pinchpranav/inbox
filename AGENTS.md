@@ -184,3 +184,74 @@ A: A plain JS assignment is unobservable, so Vue uses a Proxy's get/set traps to
 
 Q: What exactly changed in the code for the drawer fix?
 A: One creation-site change in chat.ts drawer(): the fresh drawer literal is now wrapped in reactive({…}) as LiveState before being stored in the live map, so the local handle d is the tracked proxy from first creation — all write sites (loadHistory/send/abort) are unchanged; the cast is types-only because UnwrapNestedRefs strips the ChatSocket class fields.
+
+Q: Prompt for item 3 (ZDR header)?
+A: Same owner shape — problem + method only; scope is (a) seed zdrOn from a read-only server endpoint (getZdr already exists), (b) roll back an unreachable/failed toggle instead of lying, (c) pending-while-generating so the provider isn't re-registered under an in-flight request, (d) keep off = {} never undefined; bead build-1y9 covers the first two.
+
+Q: Prompt for item 4 (generating → Pending, write map)?
+A: Framed as the single shared mechanism the notebook's bracket spans (items 2+3 → 4): one pending map (per-session model/thinking + one global ZDR value), one place that decides "generating", one flush path covering idle/aborted/error/rehydrated/socket-close, one pending visual convention — plus a guardrail to consolidate rather than add a fourth per-feature implementation; verified that no pending code exists in the checkout yet.
+
+## Session: build-1y9 ZDR truth + pending (2026-09-14)
+
+Q: Make the ZDR toggle tell the truth and go "pending" while generating (build-1y9)?
+A: Added GET /api/sessions/zdr + per-poll seeding in refreshView (no more hardcoded on), made toggleZdr confirm-before-flip (unreachable/failed clicks change nothing), and moved the mid-turn toggle server-side: PiSessionManager.setZdr records zdrPending when turnRegistry is non-empty and flushes exactly once via a new turnRegistry.onChange hook at settle — wire-verified x-cmd-zdr present/absent in both states through a logging proxy; gotcha found: the smoke thread was pinned to claude-sonnet-4-6 which 400s against the openai-completions provider shape (silently empty replies), switched to deepseek/deepseek-v4-flash.
+
+## Session: VPS pull + bring-up (2026-09-14)
+
+Q: SSH'd into the VPS — what do I run to git pull the latest and get it going again?
+A: `cd` to the clone → `git status` (clean up if dirty) → `git pull --rebase` → `bash deploy/start.sh` (rebuilds dist/, reinstalls nginx.conf on 127.0.0.1:8085, restarts inbox-backend.service, health-checks /api/projects), then verify with the 8085 curl probes + `journalctl -u inbox-backend`; the only pending upstream commit is 66b0492 (frontend-only, `src/components/Composer.vue`) so no `pnpm install` is needed, and note the uncommitted build-1y9 ZDR work on the Windows checkout is NOT part of it.
+
+## Session: VPS pull blocked by dirty tree (2026-09-14)
+
+Q: `git pull --rebase` on the VPS fails with "cannot pull with rebase: You have unstaged changes" — what now?
+A: Inspect first (`git status --short` + `git diff --stat`); if nothing dirty overlaps `src/components/Composer.vue` (the only file in the incoming 66b0492), the safe one-shot is `git pull --rebase --autostash` (stash + replay + auto-restore), falling back to `git stash push -u -m "vps-local $(date +%F)"` → pull → `git stash pop` when you want to eyeball the stash first — never `git checkout .` on a live box, since the VPS may be running uncommitted code.
+
+## Session: VPS discard-local-changes (2026-09-14)
+
+Q: Owner wants the VPS dirty tree thrown away entirely, untracked files included — safe way?
+A: Gate on `git clean -fdn` (dry run) then `git checkout -- .` + `git clean -fd` (never `-x`, which would delete deploy/.env, .inbox/inbox.db, node_modules, dist), then `git pull --rebase` + `bash deploy/start.sh`; verified safe because `.beads/.gitignore` ignores dolt/, embeddeddolt/, backup/ so the beads DB survives, while `.beads/issues.jsonl` is tracked (gitignore does not apply to tracked files) so restoring it is expected.
+
+## Session: browser extension + DeepSeek V4.1 Flash vision (2026-09-18)
+
+Q: Make the pi-agent-browser extension available to this project's embedded agent, and give deepseek-v4.1-flash image/vision support?
+A: Added `pi-agent-browser-native` as a project dependency and load it through a new table-driven `server/piExtensions.ts` (one row per extension: package + the tool names it contributes; `resolvePiExtensions()` returns `{ paths, toolNames }`) so every sidebar session now has the native `agent_browser` tool while `piSession.ts` stays about session fundamentals (it receives those two lists as plain data and never imports piExtensions); `index.ts` is the only importer, and a row that can't be resolved is logged and skipped rather than failing startup — verified `read, bash, write, edit, agent_browser` on the real `PiSessionManager`; separately, `server/commandCode.ts` was drifting at command-code@1.32/1.36 so it was re-synced exactly to upstream 1.54.0, adding `deepseek/deepseek-v4.1-flash` (`input: ["text","image"]`, efforts low/high/max) plus 13 other new models; deepseek-harness's `packages/browser-use` was checked and rejected as a drop-in because it is a cordis-plugin subsystem for DSH itself, not a pi extension.
+
+## Session: curated model catalog (2026-09-20)
+
+Q: commandCode.ts is a 407-line table dump — cut it to just the three models I use (deepseek-v4.1-flash, glm-5.3-flash, muse-spark-1.3-contributor) with their thinking levels?
+A: Rewrote it as an opinionated 184-line file whose single `CURATED_MODELS` table carries only what the provider API does NOT expose (which models we offer, their `input` modalities, their `efforts`), while the live /models fetch still supplies name + context window; `fetchModels()` now returns exactly the curated three (throws with the stale ids if none exist any more), the default model moved to `DEFAULT_MODEL_ID` = deepseek/deepseek-v4.1-flash because a non-curated default would fail to resolve, and the 11 dead exports (COMMAND_CODE namespace, modelSupportsImageInput, MODEL_EFFORTS/REASONING/INPUT_MODALITIES) are gone — verified 3 models served with correct input+pills, every curated id honoured with its own levels (muse uniquely medium/xhigh), glm's stored xhigh clamps to max, and a conversation pinned to a dropped model falls back to the default.
+
+## Session: commandCode.ts bloat review (2026-09-20)
+
+Q: Review commandCode.ts — feels bloated for 3 models with thinking levels?
+A: It's already lean at 184 lines (table + fetch + 2 lookups); the real fat is the identity effortMap/PI_THINKING_LEVELS ladder machinery and duplicated shape types — a simple cut is to drop the level-map builders and have thinkingMetadataForModel derive everything from the curated efforts array in ~10 lines, with consumers treating unsupported levels as absent.
+
+## Session: commandCode.ts final review (2026-09-20)
+
+Q: Review the slimmed commandCode.ts and explain the code?
+A: ~180 lines, four layers — types, the CURATED_MODELS table (only thing to edit), two lookup helpers (inputModalitiesForModel, thinkingLevelMapForModel building pi's real Model.thinkingLevelMap for registerProvider + the UI pills), and the live fetchModels() with curation filter — keeping thinkingLevelMap was the right call since pi-ai validates it via ModelDefinitionSchema, not just the UI.
+
+## Session: fetchModels soundness check (2026-09-20)
+
+Q: Is fetchModels logic sound despite the ugly `(body.data as unknown[])` casts?
+A: Yes — the cast chain is honest field-by-field narrowing and the fail-loud behavior is intentional, but one real robustness nit: it validates every provider entry BEFORE filtering to curated ids, so a new upstream model with an unexpected shape throws and kills the whole catalog even though we'd have filtered it out — filter first, then validate.
+
+## Session: repo freshness check (2026-09-20)
+
+Q: Is the repo actually up to date?
+A: Yes — after a fresh `git fetch`, `main` matches `origin/main` at e133253 with no incoming commits; the only local delta is uncommitted work (build-1y9 ZDR changes across server/turnRegistry/src + beads jsonl) plus untracked `.wireproxy.mjs`.
+
+## Session: pi-commandcode-provider as library (2026-09-20)
+
+Q: Official CommandCode pi extension just released — integrate it instead of the hand-rolled provider code?
+A: Plan = use `@commandcode/pi-commandcode-provider` as a library (import its `loadModels()`, filter to the 3 curated ids, pass per-model api/baseUrl/compat through registerProvider — pi's ProviderModelConfig supports all three) while KEEPING the curated `input` column (the library would wrongly mark deepseek-v4.1-flash text-only) and the provider-level runtime ZDR header (never copy the library's env-baked model-level x-cmd-zdr header); fallback if pnpm peer-dep versions clash: vendor the ~90-line Apache-2.0 toModel/loadModels into commandCode.ts.
+
+## Session: commandCode.ts library swap (2026-09-20)
+
+Q: Implement the pi-commandcode-provider-as-library swap (no per-model api field, keep the ZDR button)?
+A: Done — `@commandcode/pi-commandcode-provider@0.3.0` added, fetchModels() now calls the official `loadModels()` and only filters to CURATED_MODELS + copies fields (deliberately NOT m.headers, so the CMD_ZDR env can never make ZDR sticky; the button owns x-cmd-zdr at provider level), piSession passes `compat` through per model; verified: tsx import, fetchModels → 3 curated models with compat, pnpm build clean, live boot serves /api/models with the 3 models, image input and thinking pills intact.
+
+## Session: pending machinery strip (2026-09-20)
+
+Q: Strip the ZDR "pending" machinery entirely — getZdrPending etc. not required?
+A: Stripped across all 7 files — sessions.ts GET returns {zdr} only and POST takes {zdr?: boolean} (anything not true = false), piSession.setZdr is the plain set+re-register again, turnRegistry lost the onChange listener hook, backend.ts dropped the zdrPending ref (toggle still server-confirm-first, errors to connError), Sidebar lost the →⧗ badge; verified zero stragglers, pnpm build clean, live boot: GET {zdr:true} → POST false → {zdr:false} → garbage body still parses as false.

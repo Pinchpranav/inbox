@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@commandcode/pi-commandcode-provider':
+        specifier: ^0.3.0
+        version: 0.3.0(@earendil-works/pi-ai@0.84.2(ws@8.21.1))(@earendil-works/pi-coding-agent@0.84.2(ws@8.21.1))
       '@earendil-works/pi-coding-agent':
         specifier: latest
         version: 0.84.2(ws@8.21.1)
@@ -183,6 +186,12 @@ packages:
   '@babel/types@7.29.8':
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
+
+  '@commandcode/pi-commandcode-provider@0.3.0':
+    resolution: {integrity: sha512-snp37mS8hGz6cqov4BmobLu2AVP378bXhaLGPwfeplDovgNOQsfjv9W9rimCVgmfKYEdYSY6Fb7JFz5SASbn7Q==}
+    peerDependencies:
+      '@earendil-works/pi-ai': '*'
+      '@earendil-works/pi-coding-agent': '*'
 
   '@earendil-works/pi-agent-core@0.84.2':
     resolution: {integrity: sha512-8Pn3wSCxj0cfo5I6jxQYVB/3uuQRmHhAlEclyjqpOuMEdQMIODHizRogv56FLdbU+dTiGnybeHQ2N+sV1/L2YA==}
@@ -1620,6 +1629,11 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
+
+  '@commandcode/pi-commandcode-provider@0.3.0(@earendil-works/pi-ai@0.84.2(ws@8.21.1))(@earendil-works/pi-coding-agent@0.84.2(ws@8.21.1))':
+    dependencies:
+      '@earendil-works/pi-ai': 0.84.2(ws@8.21.1)
+      '@earendil-works/pi-coding-agent': 0.84.2(ws@8.21.1)
 
   '@earendil-works/pi-agent-core@0.84.2(ws@8.21.1)':
     dependencies:

@@ -1,17 +1,20 @@
 // commandCode.ts — our curated view of the Command Code provider.
 //
-// Opinionated on purpose. The provider serves ~70 models; we offer the three in
+// Opinionated on purpose. The provider serves ~80 models; we offer the three in
 // CURATED_MODELS below.
-// 
-// The live /models fetch supplies each model's name and context window
-// (the API knows those, so they stay current), while a curated row carries only what
-// the API does not expose — that the model exists for us at all, what it accepts, and
-// the thinking levels it takes.
+//
+// The live catalog is fetched with loadModels() from the official
+// @commandcode/pi-commandcode-provider package, which maps each entry to a pi
+// model (route pinning, request-shape compat fixes, capability metadata). The
+// curated row then carries only what that mapping cannot know — that the model
+// exists for us at all, what it accepts, and the thinking levels it takes.
 //
 // To add a model: add a row using the exact live id, take `efforts` from the
 // provider's generated `commandcode-catalog.ts`, and confirm it shows up in
 // GET /api/models. Nothing else changes.
 //
+import { loadModels } from "@commandcode/pi-commandcode-provider";
+
 export type CommandCodeInputType = "text" | "image";
 
 export type CommandCodeReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -51,6 +54,9 @@ export const DEFAULT_MODEL_ID = "deepseek/deepseek-v4.1-flash";
 
 // ── Model shapes ───────────────────────────────────────────────────
 
+/** A model as returned by the official package's loadModels(). */
+type LoadedModel = Awaited<ReturnType<typeof loadModels>>[number];
+
 /** A model as fetched from the provider, after curation. */
 export interface CommandCodeModel {
   id: string;
@@ -58,6 +64,8 @@ export interface CommandCodeModel {
   reasoning: boolean;
   contextWindow: number;
   maxTokens: number;
+  /** Request-shape fixes from the official mapping (system role, max_tokens field). */
+  compat: LoadedModel["compat"];
 }
 
 /** A model as served to the UI by `GET /api/models`. */
@@ -96,67 +104,37 @@ export function thinkingLevelMapForModel(
   return map;
 }
 
-// ── Fetch (build-gw6.2) ────────────────────────────────────────────
+// ── Fetch ──────────────────────────────────────────────────────────
 
-/** Default Command Code provider models endpoint. */
+/** Command Code provider models endpoint. */
 export const DEFAULT_MODELS_URL = "https://api.commandcode.ai/provider/v1/models";
-
-/** Default timeout for a models fetch (ms). */
-export const DEFAULT_MODELS_TIMEOUT_MS = 10_000;
-
-/** Cap on maxTokens we advertise per model (the API returns only context length). */
-const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
-
-export interface FetchModelsOptions {
-  /** Models endpoint. Defaults to DEFAULT_MODELS_URL. */
-  url?: string;
-  /** Injectable fetch (tests). Defaults to global fetch. */
-  fetchImpl?: typeof fetch;
-  /** Abort an in-flight fetch (e.g. shutdown). */
-  signal?: AbortSignal;
-  /** Timeout in ms. Defaults to DEFAULT_MODELS_TIMEOUT_MS. */
-  timeoutMs?: number;
-}
 
 /**
  * GET /provider/v1/models → the curated models the provider still serves.
  *
- * Throws on HTTP error, malformed body, timeout, abort, or when not one curated id
- * exists any more (which means CURATED_MODELS has gone stale, not that the provider is
- * down). No file cache, no fallback — the caller holds the result in memory (gw6.4).
+ * loadModels() (official package) does the fetching and the mapping; we only
+ * filter to our curated ids and copy the fields this app uses.
+ *
+ * Throws on HTTP error, timeout, or when no curated id exists any more (which
+
+ * means CURATED_MODELS has gone stale, not that the provider is down). No file
+ * cache, no fallback — the caller holds the result in memory (gw6.4).
+ *
+ * m.headers is deliberately NOT copied: with CMD_ZDR=1 in the environment the
+ * official mapping bakes x-cmd-zdr onto every model, which would make ZDR-on
+ * sticky. Our ZDR toggle owns that header at the provider level (piSession).
  */
-export async function fetchModels(options: FetchModelsOptions = {}): Promise<CommandCodeModel[]> {
-  const url = options.url ?? DEFAULT_MODELS_URL;
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const signal = options.signal ?? AbortSignal.timeout(options.timeoutMs ?? DEFAULT_MODELS_TIMEOUT_MS);
-
-  const response = await fetchImpl(url, { headers: { accept: "application/json" }, signal });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch Command Code models: ${response.status} ${response.statusText}`);
-  }
-
-  const body = (await response.json()) as { data?: unknown };
-  if (!Array.isArray(body.data)) {
-    throw new Error("Expected Command Code models response to be { object: 'list', data: [...] }");
-  }
-
-  const models = (body.data as unknown[])
-    .map((entry): CommandCodeModel => {
-      const record = entry as Record<string, unknown>;
-      const id = typeof record.id === "string" ? record.id : "";
-      const contextWindow = typeof record.context_length === "number" ? record.context_length : 0;
-      if (!id || contextWindow <= 0) {
-        throw new Error("Expected model entry to have a non-empty id and positive context_length");
-      }
-      return {
-        id,
-        name: typeof record.name === "string" ? record.name : id,
-        reasoning: (CURATED_MODELS[id]?.efforts.length ?? 0) > 0,
-        contextWindow,
-        maxTokens: Math.min(contextWindow, DEFAULT_MAX_OUTPUT_TOKENS),
-      };
-    })
-    .filter((model) => model.id in CURATED_MODELS);
+export async function fetchModels(url = DEFAULT_MODELS_URL): Promise<CommandCodeModel[]> {
+  const models = (await loadModels(url))
+    .filter((m) => m.id in CURATED_MODELS)
+    .map((m) => ({
+      id: m.id,
+      name: m.name,
+      reasoning: m.reasoning,
+      contextWindow: m.contextWindow,
+      maxTokens: m.maxTokens,
+      compat: m.compat,
+    }));
 
   if (models.length === 0) {
     throw new Error(`None of the curated models exist any more: ${Object.keys(CURATED_MODELS).join(", ")}`);

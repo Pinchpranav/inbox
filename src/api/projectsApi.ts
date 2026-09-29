@@ -191,6 +191,11 @@ export async function getModels(): Promise<ModelEntry[]> {
   return request<ModelEntry[]>("/api/models");
 }
 
+/** GET /api/sessions/zdr — the server's actual global ZDR state. */
+export async function getZdr(): Promise<{ zdr: boolean }> {
+  return request<{ zdr: boolean }>("/api/sessions/zdr");
+}
+
 /** PATCH /api/sessions/:key/model — persist the chosen model (event-sourced). */
 export async function setSessionModel(key: string, modelId: string): Promise<void> {
   await request(`/api/sessions/${encodeURIComponent(key)}/model`, json("PATCH", { model: modelId }));

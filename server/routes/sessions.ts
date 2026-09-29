@@ -162,10 +162,12 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     return c.json({ ok: true, session: { key: newKey } });
   });
 
-  // POST /api/sessions/zdr — global ZDR toggle (x-cmd-zdr: 1 on every request).
-  // No validation beyond the boolean: the UI is the only caller.
+  // GET /api/sessions/zdr — current global ZDR state.
+  app.get("/api/sessions/zdr", (c) => c.json({ zdr: manager.getZdr() }));
+
+  // POST /api/sessions/zdr — toggle global ZDR. Anything but zdr:true counts as false.
   app.post("/api/sessions/zdr", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { zdr?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as { zdr?: boolean } | null;
     await manager.setZdr(body?.zdr === true);
     return c.json({ ok: true });
   });

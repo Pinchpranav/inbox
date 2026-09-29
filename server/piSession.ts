@@ -30,6 +30,7 @@
 //     const relay = attachAssistantRelay(store, key, handle.session)
 //     await handle.session.prompt(text)
 //   routes/sessions.ts (ZDR):
+//     GET  /api/sessions/zdr → { zdr }            (UI seeds its toggle from this)
 //     POST /api/sessions/zdr → manager.setZdr(bool) → re-register provider
 //   The manager holds one AgentSession per conversation key in `handles`.
 import {
@@ -165,7 +166,7 @@ export class PiSessionManager {
   private async registerCommandCode() {
     let models: CommandCodeModel[] = [];
     try {
-      models = await fetchModels({ url: `${COMMANDCODE_API_BASE}/models` });
+      models = await fetchModels(`${COMMANDCODE_API_BASE}/models`);
     } catch (err) {
       console.error("[command-code] model fetch failed:", err);
     }
@@ -189,6 +190,7 @@ export class PiSessionManager {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: m.contextWindow,
         maxTokens: m.maxTokens,
+        compat: m.compat,
       })),
     });
   }

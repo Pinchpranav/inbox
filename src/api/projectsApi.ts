@@ -186,7 +186,7 @@ export async function moveSession(key: string, destProjectId: string): Promise<{
   return res.session;
 }
 
-/** GET /api/models — the catalog for the composer picker (build-gw6.5.1). */
+/** GET /api/models — the catalog for the composer picker. */
 export async function getModels(): Promise<ModelEntry[]> {
   return request<ModelEntry[]>("/api/models");
 }

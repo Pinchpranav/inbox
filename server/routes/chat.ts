@@ -9,7 +9,7 @@
 // message is persisted but its message.sent is NOT forwarded (the browser
 // already rendered it).
 //
-// Per-turn lifecycle (review fixes):
+// Per-turn lifecycle:
 //   - The PROMPT handler owns the single terminal status frame. It waits on
 //     `session.prompt()` (NOT `relay.finished`), so it can't hang when a turn
 //     ends without a text_end (empty / aborted / silent-error). It reports
@@ -22,7 +22,7 @@
 //     relay double-persists/publishes on later turns.
 //
 // ── FLOW (who calls what) ─────────────────────────────────────────────
-//   index.ts (entry, build-5ei):
+//   index.ts (entry):
 //     const { app, injectWebSocket } = createChatRouter(deps)
 //     const server = serve({ fetch: app.fetch, port })
 //     injectWebSocket(server)          // attaches the WS server to the HTTP server
@@ -41,7 +41,7 @@ import { bus, EVENT, type BusEvent } from "../bus.ts";
 import { turnRegistry } from "../turnRegistry.ts";
 import type { ClientFrame } from "../types.ts";
 
-/** Everything the chat route needs, injected by index.ts (build-5ei). */
+/** Everything the chat route needs, injected by index.ts. */
 export interface ChatDeps {
   store: StateStore;
   manager: PiSessionManager;

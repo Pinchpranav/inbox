@@ -9,8 +9,7 @@
 //   Browser ──ClientFrame──▶ (WS /api/chat/:key) ──▶ server
 //   Browser ◀──ServerFrame── (WS /api/chat/:key) ◀── server
 //   Browser ◀──InboxSession[]── (GET /api/inbox) ◀── server
-// These types are consumed by the routes (build-spi / build-cqf) and by the
-// frontend (build-n9b / build-2c9).
+// These types are consumed by the routes and by the frontend.
 
 import type { State } from "./stateStore.ts";
 

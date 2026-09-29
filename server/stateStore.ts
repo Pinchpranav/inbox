@@ -9,11 +9,11 @@
 // Uses node:sqlite (built-in, requires Node >= 22.5).
 //
 // ── FLOW (who calls what) ─────────────────────────────────────────────
-//   index.ts (entry, build-5ei):
+//   index.ts (entry):
 //     const store = new StateStore(dbPath); store.rebuildProjections();
 //     ... on shutdown: store.close()
 //   relay.ts (writes): store.write({...})  — user prompt + assistant deltas
-//   routes (build-spi, reads): getProjects / getSessions / getMessages / getInbox
+//   routes (reads): getProjects / getSessions / getMessages / getInbox
 //   piSession.ts (reads): store.getMessages(key)  — to seed a resumed session
 //   The store is the single object that owns ALL database access.
 
@@ -156,7 +156,7 @@ export class StateStore {
       );
     `);
 
-    // build-gw6.5.1: add per-session model + thinking columns to existing DBs.
+    // Add per-session model + thinking columns to existing DBs.
     // node:sqlite's SQLite build rejects `ADD COLUMN IF NOT EXISTS`, so guard each
     // ALTER with a PRAGMA table_info check (adding an existing column is an error).
     const existingCols = new Set(
@@ -413,7 +413,7 @@ export class StateStore {
   }
 
   /**
-   * A single conversation by key. build-gw6.5.1: used by piSession.open() to read
+   * A single conversation by key. Used by piSession.open() to read
    * the stored modelId/thinkingLevel. Returns undefined when the key is unknown.
    */
   getSession(key: string): Session | undefined {

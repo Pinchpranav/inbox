@@ -1,5 +1,5 @@
-// Live conversation state, one "drawer" per thread (build-a9c: extracted from
-// App.vue). `live` is a map keyed by session key; each drawer holds that
+// Live conversation state, one "drawer" per thread. `live` is a map keyed by
+// session key; each drawer holds that
 // thread's settled messages, its in-progress reply, its status line, and its
 // own socket. The UI renders ONE drawer (the selected thread), but every open
 // drawer keeps working — so switching threads no longer aborts a stream.
@@ -42,7 +42,7 @@ function drawer(key: string): LiveState {
     // proxy Vue tracks. If we store the raw object and return it, every
     // mutation on first creation (d.loading, d.messages, …) bypasses
     // reactivity and the UI never re-renders — the "first click shows
-    // loading forever, second click works" bug (build-2on).
+    // loading forever, second click works" bug.
     d = reactive({
       messages: [],
       loading: false,
@@ -82,7 +82,7 @@ export async function loadHistory(key: string): Promise<void> {
   try {
     const rows = await api.fetchMessages(key);
     if (!d.streaming) d.messages = rows;
-    // Turn-status rehydration (build-b0j): after a refresh the drawer is brand
+    // Turn-status rehydration: after a refresh the drawer is brand
     // new, but the server may still be running a turn for this conversation.
     // Ask it; if yes, re-derive the live state instead of staying silent until
     // the next message.end lands.

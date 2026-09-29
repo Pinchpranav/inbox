@@ -22,10 +22,10 @@
 // the session this manager opens.
 //
 // ── FLOW (who calls what) ─────────────────────────────────────────────
-//   index.ts (entry, build-5ei):
+//   index.ts (entry):
 //     const manager = await PiSessionManager.create(store, { agentDir, cwd, extensions })
 //     ... on shutdown: manager.disposeAll()
-//   chat.ts (WS route, build-cqf):
+//   chat.ts (WS route):
 //     const handle = await manager.open(sessionKey, projectDir)  // per prompt
 //     const relay = attachAssistantRelay(store, key, handle.session)
 //     await handle.session.prompt(text)
@@ -111,7 +111,7 @@ export class PiSessionManager {
   private handles = new Map<string, SessionHandle>();
   private modelProvider: string;
   private modelId: string;
-  /** Cached Command Code catalog (build-gw6.5.1): fetched once at startup so getModels() can serve it. */
+  /** Cached Command Code catalog, fetched once at startup so getModels() can serve it. */
   private models: CommandCodeModel[] = [];
   /** Global ZDR (zero data retention) state. On by default. */
   private zdrEnabled = true;
@@ -211,7 +211,7 @@ export class PiSessionManager {
   }
 
   /**
-   * The model catalog as served by GET /api/models (build-gw6.5.1). Pure composition
+   * The model catalog as served by GET /api/models. Pure composition
    * over commandCode.ts helpers — no new model logic. `thinkingLevelMap` comes from the
    * per-model curated table (the API doesn't expose it); a model with no reasoning gets
    * `undefined`. The separate `reasoning` boolean was dropped — "reasons?" is exactly
@@ -265,7 +265,7 @@ export class PiSessionManager {
    * @param projectDir execution cwd (the project's working directory)
    */
   async open(sessionKey: string, projectDir: string): Promise<SessionHandle> {
-    // build-gw6.5.1: the stored model (fall back to manager default when null or no
+    // The stored model (fall back to manager default when null or no
     // longer in the catalog). Resolved BEFORE the cached-handle check so a picker
     // change on an already-open conversation is honored (see the recreate below).
     const stored = this.store.getSession(sessionKey);
@@ -277,9 +277,8 @@ export class PiSessionManager {
     // Same model as the cached handle -> reuse it (the common path).
     if (existing && existing.modelId === modelId) return existing;
     // The picker changed the model for an already-open conversation: the cached handle
-    // still runs the OLD model (previously this was silently ignored, so a convo stuck
-    // on a broken model kept failing even after switching models). Dispose it and
-    // rebuild with the new model + fresh history seed from the store.
+    // still runs the OLD model. Dispose it and rebuild with the new model + fresh
+    // history seed from the store.
     if (existing) existing.dispose();
 
     const history = this.store.getMessages(sessionKey);

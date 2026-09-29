@@ -1,12 +1,7 @@
 // relay.ts — capture pi AgentSession events, PERSIST them to the store
 // (persist-first, t3code ordering), THEN PUBLISH them onto the in-memory bus.
 //
-// Step 5 adds the publish step: after each durable write, emit the same event
-// on the bus so a decoupled subscriber (test now, WebSocket later) receives it
-// live. This proves the DB write and the live push are two consumers of the
-// same event — the decoupling check.
-//
-// COALESCING (build-359): one WS frame per token (~70/sec through nginx +
+// COALESCING: one WS frame per token (~70/sec through nginx +
 // Cloudflare) is the round-trip-count bottleneck, not volume. Deltas are
 // buffered in memory; a 1s interval persists the buffer as ONE streaming
 // chunk (message.sent) and emits ONE bus event — the durable write still
@@ -16,7 +11,7 @@
 // never reaches the DB — same as today for an abort before text_end.
 //
 // ── FLOW (who calls what) ─────────────────────────────────────────────
-//   chat.ts (WS route, build-cqf) is the ONLY caller of this file:
+//   chat.ts (WS route) is the ONLY caller of this file:
 //     1. recordUserMessage(store, key, text)   — persist the user's prompt
 //        BEFORE the engine runs (t3code ordering).
 //     2. attachAssistantRelay(store, key, session) — subscribe to the engine's
@@ -90,7 +85,7 @@ function emit(ev: Omit<BusEvent, "sessionKey"> & { sessionKey: string }): void {
 
 /**
  * Attach to an AgentSession, PERSIST its output persist-first, THEN publish
- * each event to the bus (build-359 coalesced):
+ * each event to the bus (coalesced):
  *   text_delta -> buffered in memory; a 1s interval persists + publishes
  *                 the accumulated chunk as ONE "message.delta" (one WS frame/sec)
  *   text_end   -> persist + publish "message.end" (final full text)
@@ -106,13 +101,13 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
 }): AttachedRelay {
   let assistantId: string | null = null;
   let streamed = "";
-  // build-359: buffer for the coalescing interval (see flushInterval below).
+  // Buffer for the coalescing interval (see flushInterval below).
   let buffer = "";
   // this resolveFinished is used on the else-if of text_end
   let resolveFinished: (r: RelayResult) => void = () => {};
   const finished = new Promise<RelayResult>((res) => (resolveFinished = res));
 
-  // build-359: persist + publish the accumulated buffer as ONE streaming chunk.
+  // Persist + publish the accumulated buffer as ONE streaming chunk.
   // Called by the 1s interval (and reused by nothing else). The durable write
   // happens here BEFORE the bus event — persist-first invariant is preserved.
   const flush = () => {
@@ -125,11 +120,11 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
     });
     emit({ sessionKey, kind: "message.delta", messageId: assistantId, role: "assistant", text: chunk, streaming: true, sequence });
   };
-  // build-359: one frame per second instead of one per token (~70/sec).
+  // One frame per second instead of one per token (~70/sec).
   // The interval is cleared at text_end (the terminal event) AND in
   // unsubscribe() — abort never fires text_end, so without the second clear
   // an aborted turn would leak the timer and could flush one ghost
-  // message.delta after the "aborted" status (build-359 review).
+  // message.delta after the "aborted" status.
   const flushInterval = setInterval(flush, 1000);
 
   const unsubscribe = session.subscribe((ev: PiEvent) => {
@@ -144,7 +139,7 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
       buffer = "";
     } else if (ae.type === "text_delta" && assistantId) {
       // A streaming chunk: append to the in-memory buffer. Nothing is written
-      // or published until the 1s interval flushes it (build-359).
+      // or published until the 1s interval flushes it.
       streamed += ae.delta ?? "";
       buffer += ae.delta ?? "";
     } else if (ae.type === "text_end" && assistantId) {
@@ -153,7 +148,7 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
       // The clear here is the crux: the relay is one-shot, so the timer must
       // die at the exact moment the turn ends, or it leaks forever.
       clearInterval(flushInterval);
-      // build-359: drop anything still sitting in the coalescing buffer — the
+      // Drop anything still sitting in the coalescing buffer — the
       // final write below carries the full text and replaces it in the
       // projection (same behavior as pre-coalescing for text_end).
       buffer = "";
@@ -168,7 +163,7 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
     }
   });
 
-  // build-359 review: unsubscribe() is the single deterministic cleanup
+  // unsubscribe() is the single deterministic cleanup
   // point chat.ts calls in `finally` on BOTH paths (normal + abort). Clearing
   // the interval here (idempotent alongside the text_end clear) guarantees
   // the timer dies on abort too, and that no ghost flush can fire after the

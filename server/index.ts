@@ -1,5 +1,5 @@
 // server/index.ts — entry: build the store + session manager, mount all four routers,
-// serve HTTP + WS, keep the process alive, and shut down gracefully. (build-5ei)
+// serve HTTP + WS, keep the process alive, and shut down gracefully.
 //
 // ── FLOW (assembly line) ─────────────────────────────────────────────
 //   main() -> StateStore(dbPath) + rebuildProjections()

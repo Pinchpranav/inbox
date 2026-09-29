@@ -118,7 +118,7 @@ export const DEFAULT_MODELS_URL = "https://api.commandcode.ai/provider/v1/models
  * Throws on HTTP error, timeout, or when no curated id exists any more (which
 
  * means CURATED_MODELS has gone stale, not that the provider is down). No file
- * cache, no fallback — the caller holds the result in memory (gw6.4).
+ * cache, no fallback — the caller holds the result in memory.
  *
  * m.headers is deliberately NOT copied: with CMD_ZDR=1 in the environment the
  * official mapping bakes x-cmd-zdr onto every model, which would make ZDR-on

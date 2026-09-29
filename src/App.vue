@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// App shell (build-a9c): composes the state modules and the three panes.
+// App shell: composes the state modules and the three panes.
 // State lives in src/state/ — backend.ts (server relationship), sessions.ts
 // (projects/threads/selection + write actions), chat.ts (per-thread live
 // streams). This file only wires them to the components.

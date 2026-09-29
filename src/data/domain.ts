@@ -30,7 +30,7 @@ export interface Message {
   text: string;
 }
 
-/** A model as returned by GET /api/models (build-gw6.5.1). */
+/** A model as returned by GET /api/models. */
 export interface ModelEntry {
   id: string;
   name: string;

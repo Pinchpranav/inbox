@@ -16,7 +16,7 @@ const props = defineProps<{
   /** Backend connection status shown as a small dot in the header. */
   conn?: "ok" | "loading" | "error";
   connError?: string;
-  /** Global ZDR (zero data retention) state, owned by backend.ts (build-gw6.5.1). */
+  /** Global ZDR (zero data retention) state, owned by backend.ts. */
   zdr?: boolean;
 }>();
 
@@ -117,7 +117,7 @@ function onMove(s: Session) {
     </div>
 
     <div class="scroll">
-      <!-- Offline empty state (build-a9c: demo mode removed — no fake data) -->
+      <!-- Offline empty state -->
       <div v-if="conn === 'error' && projects.length === 0" class="offline-card">
         <p class="offline-title">Backend not connected</p>
         <p class="offline-sub">{{ connError || "Start the server, then check again." }}</p>
@@ -270,7 +270,7 @@ function onMove(s: Session) {
   border-color: var(--border-strong);
   background: var(--bg-soft-2);
 }
-/* build-gw6.5.1: global ZDR toggle (replaces the chat-header button). */
+/* Global ZDR toggle. */
 .zdr-btn {
   position: absolute;
   left: 66px;
@@ -299,7 +299,7 @@ function onMove(s: Session) {
   top: auto;
   transform: none;
 }
-/* build-gw6.5.1: settings moved from the gear (⚙) to a small ⋯ by the conn dot. */
+/* Settings: a small ⋯ by the conn dot. */
 .settings-btn {
   position: absolute;
   left: 40px;
@@ -347,7 +347,7 @@ function onMove(s: Session) {
   50% { opacity: 0.35; }
 }
 
-/* Offline empty state (build-a9c) */
+/* Offline empty state */
 .offline-card {
   margin: 16px 8px;
   padding: 16px 14px;

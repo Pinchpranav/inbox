@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import type { ModelEntry } from "../data/domain";
 
-// build-gw6.5.1: the chat composer. Lives at the bottom of ChatView.
+// The chat composer. Lives at the bottom of ChatView.
 // Input shell (top): ＋ attach stub, auto-grow textarea, send ↑ → ■ stop while streaming.
 // Control row (bottom): [Model ▾] + [thinking: off ▾] (click + Shift+Tab cycle).
 const props = defineProps<{

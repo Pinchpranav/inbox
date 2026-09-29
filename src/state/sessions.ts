@@ -1,4 +1,4 @@
-// The app's world model (build-a9c: extracted from App.vue). Owns: the
+// The app's world model. Owns: the
 // projects list, the sessions (threads) list, which one is selected, the
 // 5s poll that keeps both fresh, and the write actions (new project/thread,
 // state, noInbox, move, per-session model/thinking).
@@ -150,7 +150,7 @@ export function setProjectState(agentId: string, state: State): void {
     });
 }
 
-// ── per-session model + thinking (build-gw6.5.1) ──────────────────────────
+// ── per-session model + thinking ──────────────────────────────────────────
 
 export const selectedModelId = computed(() => selectedSession.value?.modelId ?? null);
 export const selectedThinking = computed(() => selectedSession.value?.thinkingLevel ?? null);

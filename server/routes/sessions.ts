@@ -79,7 +79,7 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     return c.json({ ok: true });
   });
 
-  // GET /api/models — the catalog for the composer picker (build-gw6.5.1).
+  // GET /api/models — the catalog for the composer picker.
   // {id, name, thinkingLevelMap, input}; thinkingLevelMap undefined = no reasoning.
   app.get("/api/models", (c) => {
     return c.json(manager.getModels());

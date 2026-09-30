@@ -255,3 +255,91 @@ A: Done — `@commandcode/pi-commandcode-provider@0.3.0` added, fetchModels() no
 
 Q: Strip the ZDR "pending" machinery entirely — getZdrPending etc. not required?
 A: Stripped across all 7 files — sessions.ts GET returns {zdr} only and POST takes {zdr?: boolean} (anything not true = false), piSession.setZdr is the plain set+re-register again, turnRegistry lost the onChange listener hook, backend.ts dropped the zdrPending ref (toggle still server-confirm-first, errors to connError), Sidebar lost the →⧗ badge; verified zero stragglers, pnpm build clean, live boot: GET {zdr:true} → POST false → {zdr:false} → garbage body still parses as false.
+
+## Session: relay.ts unused-finished review (2026-09-20)
+
+Q: Is the assertion true that relay.ts's `finished` promise is unused and should be deleted?
+A: True — `finished`/`RelayResult`/`resolveFinished` and the resolve call are dead code: the only caller (server/routes/chat.ts:112) uses just `relay?.unsubscribe()` in `finally` and treats `await handle.session.prompt(text)` as the terminal signal, so `AttachedRelay` can collapse to `{ unsubscribe(): void }` while `streamed` must stay (it is the fallback for `full` at text_end).
+
+## Session: relay.ts user-message bus assertion (2026-09-20)
+
+Q: Analyse the assertion that recordUserMessage's bus emission (message.sent) + BusEventKind member are dead and should be deleted?
+A: TRUE and corroborated by the design doc (direction/step2-files 1.md:160 says the user's own message is persisted but NOT published) — chat.ts:51-71 is the only bus subscriber and skips that kind, chat.ts:105 discards the returned messageId, so removing the emission + the BusEventKind member is safe with three tidy-ups: the store's own "message.sent" event type (stateStore.ts:86) must stay, `const sequence` becomes unused, and stale comments in relay.ts:14, bus.ts:12, chat.ts:51/71 plus the now assistant-only `role` field need updating.
+
+Q: Explain the relay.ts "unused user-message bus emission" assertion in plainer terms?
+A: It's a radio station broadcasting on a channel whose only listener has already said "I don't care about that channel" — sending a prompt does two things, save it to the DB (needed, history reads it) and shout "user message!" on the internal bus, but the one and only bus listener (the WS route) deliberately ignores that shout because the browser already drew the message itself, so both the shout and the ID handed back by the function are wasted.
+
+## Session: remove fake composer attach (2026-09-30)
+
+Q: The ＋ in Composer.vue opens a file picker then clears it (nothing uploads/sends) — just delete the button until attachments work?
+A: Done — Composer.vue lost the ＋ button, the hidden `<input type="file">`, `onAttach`/`onFileChange`, the `fileInput` ref, the `.attach`/`.file-input` CSS, and the stale "attach stub" comment, with the shell's left padding nudged 8px→12px to keep the textarea aligned (2 insertions / 33 deletions, `pnpm build` clean via vue-tsc); the only other mention of the stub is the build-gw6.5.1 design text, and real image-attach wiring was already deferred (phase-2 per gw6) tracked as build-zp2.
+
+## Session: chat.ts terminal-signal review (2026-09-20)
+
+Q: Does chat.ts's arrangement (per-connection state + `await session.prompt()`) hold up well enough that deleting `relay.finished` is safe?
+A: Yes — verified in the SDK that `agent-loop` returns (resolves, does not throw) on `stopReason === "aborted"`, so `await session.prompt()` is a true turn-lifetime signal that also matches what turnRegistry + GET /api/sessions/:key/status + the frontend rehydration poll depend on, and awaiting `relay.finished` instead would be the trap (it never resolves on abort/empty turns, so `finally` would never clear turnRegistry); but the review surfaced one real adjacent defect — relay.ts clears its 1s flush interval at the FIRST text_end while a tool-using prompt emits text_start/text_end once per LLM response (openai-completions: end of stream; anthropic: each content_block_stop), killing live streaming for every later segment, and the fix is to drop that clearInterval (unsubscribe() in chat.ts's `finally` already handles the abort case).
+
+Q: On send, are two POST requests fired (relay vs stateStore)? And why does "message.sent" also exist in stateStore.ts?
+A: No HTTP at all for sending — the browser optimistically renders the bubble locally (src/state/chat.ts:168) then sends ONE WS frame {type:"prompt"} on /api/chat/:key; relay and stateStore are not two requests but two sequential layers inside that one server-side call (store.write() appends to the orchestration_events log + projects into projection_messages, THEN relay emits on the in-memory bus), and "message.sent" is only a shared SPELLING used by two unrelated worlds — a DB log event type (stateStore.ts:86, load-bearing and used for assistant rows too) and a bus channel kind (bus.ts:12, emitted once at relay.ts:68, ignored by the only subscriber) — so the earlier assertion deletes only the bus one.
+
+Q: What does "one WebSocket frame" mean here, since sending a message just opens a socket?
+A: HTTP POST = a one-shot letter (new connection, one request, one reply, done), whereas a WebSocket = a phone call that stays open with many small messages ("frames") flowing both ways — this app opens a FRESH call per turn in send() (src/state/chat.ts:186 new ChatSocket, closed in closeTurn():234) and sends the prompt as a single browser→server frame {type:"prompt"} on open, after which the server pushes ~1 message.delta frame/sec plus message.end and status down the SAME call until the browser hears status "idle" and hangs up — and the bus exists precisely because the server side cannot push into an open call via HTTP, so relay emits internally and the WS route forwards each event as a frame.
+
+## Session: delete unused relay.finished + push (2026-09-20)
+
+Q: Delete the unconsumed relay completion promise, then commit and push to main?
+A: Done — a9ad47b "refactor(server): delete the unused relay completion promise" (RelayResult/finished/resolveFinished + the resolve call gone, AttachedRelay is now { unsubscribe() }, `streamed` kept as the text_end fallback; tsc + pnpm build clean, tsx smoke confirmed both text_end paths still persist and unsubscribe detaches), pushed aa0f9a4..a9ad47b to origin/main; note the commit also carried relay.ts's already-uncommitted comment-trim edits, and the rest of that in-flight comment-cleanup slice (server/*.ts + Composer.vue attach-stub removal) is still unstaged.
+
+Q: One simple para: what does the relay.ts assertion say and what is to be done — is deleting the bus emission fine?
+A: Yes it's fine: chat.ts holds the only bus listener and it deliberately drops anything that isn't message.delta/message.end (browser already drew your own bubble locally), so the emit on relay.ts:68 reaches nobody, and its returned messageId is discarded at chat.ts:105 — therefore keep the store.write (the SQLite row is what history reads), delete the emit call, delete "message.sent" from BusEventKind in bus.ts, downgrade the signature to void, and tidy the stale comments — but do NOT touch the identically-spelled DB event type in stateStore.ts:86 (it also carries assistant chunks) and remember `const sequence` becomes unused.
+
+## Session: bus metadata removal (2026-09-20)
+
+Q: Review the "unused bus metadata" assertion (remove sequence + streaming from BusEvent) and apply it if true?
+A: True and applied — the single subscriber (routes/chat.ts:52) reads only sessionKey/kind/messageId/text/role, so `BusEvent.sequence` and `BusEvent.streaming` are gone (chat.ts needed zero changes), while the durable key and the persisted streaming flag stay put: store.write() still returns the sqlite sequence (all other callers already discarded it, so relay's three `const sequence =` captures are now plain calls) and the message.sent payload keeps `streaming: true` for stateStore's append-vs-replace projection rule; verified with an in-memory StateStore smoke run — all three bus events now carry exactly [kind,messageId,role,sessionKey,text], mid-stream row "one two"/isStreaming true then text_end replaces with "one two three"/false, write() still returns a sequence, server tsc + pnpm build clean.
+
+Q: How does the prompt actually reach the inference provider via the pi engine?
+A: chat.ts:120 `await handle.session.prompt(text)` is the handoff — recordUserMessage's SQLite row is only for history, while the live text goes into pi's AgentSession (created at piSession.ts:277 by createAgentSession with the model object resolved from ModelRuntime, cwd = the project dir, tools read/bash/write/edit + extensions, and prior history seeded into session.agent.state.messages on resume); the agent loop then posts the assembled message list to the provider registered at piSession.ts:167 (provider "command-code", api "openai-completions", baseUrl https://api.commandcode.ai/provider/v1, apiKey from COMMANDCODE_API_KEY, headers x-cmd-zdr:1 when ZDR is on), and pi-ai's openai-completions client builds an OpenAI client with baseURL = model.baseUrl and POSTs {baseUrl}/chat/completions with stream:true — the SSE chunks come back as message_update events, which are exactly what attachAssistantRelay subscribes to, so the stream the relay persists is the same HTTP response stream the provider is emitting.
+
+## Session: small UI leftovers sweep (2026-09-20)
+
+Q: Check the "small UI leftovers" assertion (unread modelRef, unused State import, dead props/emit assignments, .inbox-head, collapsed.inbox, --composer-bg) and act?
+A: All six confirmed dead and removed across 5 files — Composer lost the never-read modelRef ref (declaration + template binding; the menu closes on @mouseleave/pick, so no click-outside handler ever used it), App.vue's `import type { Message, State }` became just Message, SessionRow's `const props =`/`const emit =` dropped their assignments while keeping both defineProps/defineEmits declarations (it is the only component of seven with that pattern — the template reads props by name and all 5 calls are $emit), Sidebar lost the orphan `.inbox-head` rule and `{ inbox: false }` (its collapse map is keyed by project id, so the stale key was never read), and style.css lost both --composer-bg definitions (never referenced; Composer's .composer is background: transparent); pnpm build + server tsc clean (CSS 22.06→21.97 kB, JS 198.97→198.92 kB), nothing committed yet.
+
+## Session: dead-export assertion check (2026-09-30)
+
+Q: Are isStreaming() (src/state/chat.ts:65), turnRegistry.keys() (server/turnRegistry.ts:24), and server/types.ts's ServerFrame/Phase really unused?
+A: All true — no callers for any of them, so they were deleted (plus the equally dead `State` re-export in server/types.ts): the drawer's streaming flag is read directly via liveFor(key).streaming by App.vue:53, turnRegistry only needs has/add/delete (chat.ts writes, sessions.ts status reads), and the server→browser frame union had exactly one real consumer, the browser, which already declares it privately in src/api/chatSocket.ts.
+
+Q: Why delete the server's ServerFrame instead of sharing the protocol types?
+A: Because sharing costs more than it saves: server/types.ts's ServerFrame referenced stateStore's Message (a DB shape importing node/better-sqlite3 world) and the frontend tsconfig only includes src/**, so a single source would force server code into the client typecheck; the union is single-consumer, so each side keeps one declaration and the two files now cross-reference each other (server/types.ts header -> src/api/chatSocket.ts, and vice versa) to catch drift.
+
+Q: What verified the deletion was safe?
+A: server/tsconfig.json `tsc --noEmit` clean, `pnpm build` (vue-tsc + vite) clean, and a live boot on PORT=8799 returning 200 for /api/inbox, /api/projects and /api/models; tracked as build-qlf (closed).
+
+Q: Is the await waiting on recordUserMessage, and should the emit actually be deleted — is the browser's own memory enough?
+A: No await touches recordUserMessage (chat.ts:105 is a bare sync call — store.write() returns a `number` from node:sqlite's synchronous DatabaseSync, so the only awaits on that path are manager.open at :107 and session.prompt at :120), and yes the emit should be deleted because the client's memory is provably sufficient: the browser pushes its own bubble BEFORE any server involvement (send() at src/state/chat.ts:168), every later read comes from the DB via GET /api/sessions/:key/messages, and the only bus subscriber drops that kind anyway — the single hypothetical where it would matter (a second tab watching your prompt appear live) does not exist today and would need a new client handler regardless, so deleting changes no observable behaviour.
+
+## Session: delete direction/ + PLAN_model_picker.md from the repo (2026-09-30)
+
+Q: Owner took direction/ out of the working tree — delete it (and PLAN_model_picker.md) from the GitHub repo too?
+A: Done in a8a22f0 (pushed to main): 9 files / 1503 lines — the 8 tracked files under direction/ (agent-qa, build-gw6.5.1-ideation, "contracts 7", "deployment plan", functionality_v4, parallel-chat-arch/notes, "step2-files 1", "system 1") plus PLAN_model_picker.md; verified origin/main no longer has either path, no code imported them, and the model-picker design survives verbatim in bead build-gw6.5.1's design field (comment added there).
+
+Q: What needs a follow-up after removing the design docs?
+A: The prose pointers are now dead — CONTEXT.md:8-10 ("the source of truth — `direction/`"), README.md:12 and README.md:88 (repo-layout tree), and deploy/DEPLOYMENT.md:5 (references `direction/deployment plan.md`); historical AGENTS.md session notes also cite direction/ files, but those are logs and should stay.
+
+## Session: delete CLAUDE.md (2026-09-30)
+
+Q: Delete CLAUDE.md?
+A: Done in 3204b81 (pushed to main, 77 lines removed): it was boilerplate duplicate of AGENTS.md — the same bd-generated Beads block under an older hash (6cd5cc61 vs AGENTS.md's 970c3bf2) plus empty "_Add your build and test commands here_" placeholder sections — with zero references anywhere in the repo, and `bd setup claude` would regenerate it if re-run.
+
+## Session: commit the rewritten README (2026-09-30)
+
+Q: Commit the new README?
+A: Committed as 12f9d70 (README.md only, +45/-71, not yet pushed) — the owner's rewrite drops the stale OpenClaw/ollama-cloud wiring, the 13-endpoint request table and the direction//archive//mock.ts layout lines, and adds the COMMANDCODE_API_KEY + `pnpm exec tsx server/index.ts` + `pnpm dev` loop, the validation commands and a deploy/DEPLOYMENT.md pointer; every factual claim was checked against code (vite.config.ts INBOX_BACKEND_TARGET, server/index.ts:115 INBOX_DB/.inbox/inbox.db, port 8787, deploy/start.sh), and two nits were left for the owner: the sentence "Idea of the project is to use any models we want with" ends on a dangling "with", and deploy/DEPLOYMENT.md:5 (linked from the README) still cites the now-deleted direction/deployment plan.md.
+
+Q: What happened mid-commit (staged chat.ts hunks, moved HEAD, unpushed doc commits)?
+A: Nothing broke — while we were working, another concurrent session committed 4 more commits in this repo (a8a22f0 design docs deleted, 3204b81 CLAUDE.md deleted, 12f9d70 README rewritten) leaving local main ahead of origin/main by 1; in parallel I used `git apply --cached --recount` with a hunk-filtered patch to stage ONLY my two chat.ts comment lines (server/relay.ts and server/bus.ts still unstaged) so the commit would not sweep up that session's unfinished edits (chat.ts header rewrite + server/index.ts, piSession.ts, sessions.ts, stateStore.ts, .beads, AGENTS.md), and nothing has been committed or pushed by me yet.
+
+Q: Commit + push the message.sent bus-emission deletion (title: refactor(server): stop publishing user prompts on the bus)?
+A: Done — 6acd4da on main (3 files, 14+/11-: server/relay.ts, server/bus.ts, server/routes/chat.ts) with selective staging via `git apply --cached --recount` so the concurrent session's uncommitted chat.ts header rewrite and server/{index,piSession,sessions,stateStore}.ts edits were NOT swept in; pushed 3204b81..6acd4da, which also published their unpushed 12f9d70 "docs: rewrite the README", and `git status -sb` now shows main in sync with origin/main (beads jsonl + AGENTS.md remain uncommitted).

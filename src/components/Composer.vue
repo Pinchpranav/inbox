@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import type { ModelEntry } from "../data/domain";
 
 // The chat composer. Lives at the bottom of ChatView.
-// Input shell (top): ＋ attach stub, auto-grow textarea, send ↑ → ■ stop while streaming.
+// Input shell (top): auto-grow textarea, send ↑ → ■ stop while streaming.
 // Control row (bottom): [Model ▾] + [thinking: off ▾] (click + Shift+Tab cycle).
 const props = defineProps<{
   models: ModelEntry[];
@@ -21,22 +21,11 @@ const emit = defineEmits<{
 
 // ── Input shell ────────────────────────────────────────────────────────
 const draft = ref("");
-const fileInput = ref<HTMLInputElement | null>(null);
 const taEl = ref<HTMLTextAreaElement | null>(null);
 
 const currentModel = computed<ModelEntry | undefined>(() =>
   props.models.find((m) => m.id === props.modelId) ?? props.models[0],
 );
-
-// Attach stub: open the native picker (no model wiring yet — phase-2 per gw6).
-function onAttach() {
-  fileInput.value?.click();
-}
-function onFileChange(e: Event) {
-  const input = e.target as HTMLInputElement;
-  // Stub: we don't send the file anywhere yet; just clear the input.
-  input.value = "";
-}
 
 function autoGrow() {
   const el = taEl.value;
@@ -111,8 +100,6 @@ function onThinkingKeydown(e: KeyboardEvent) {
   <footer class="composer">
     <!-- Input shell -->
     <div class="shell">
-      <button class="attach" title="Attach file (stub)" @click="onAttach">＋</button>
-      <input ref="fileInput" type="file" class="file-input" @change="onFileChange" />
       <textarea
         ref="taEl"
         v-model="draft"
@@ -180,7 +167,7 @@ function onThinkingKeydown(e: KeyboardEvent) {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 10px 10px 10px 8px;
+  padding: 10px 10px 10px 12px;
   min-height: 56px;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -188,24 +175,6 @@ function onThinkingKeydown(e: KeyboardEvent) {
 .shell:focus-within {
   border-color: var(--border);
   box-shadow: none;
-}
-.attach {
-  flex: none;
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--bg-soft);
-  color: var(--text-soft);
-  font-size: 19px;
-  line-height: 1;
-}
-.attach:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-}
-.file-input {
-  display: none;
 }
 .input {
   flex: 1;

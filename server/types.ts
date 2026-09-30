@@ -6,14 +6,14 @@
 // not muted.
 //
 // ── FLOW ─────────────────────────────────────────────────────────────
-//   Browser ──ClientFrame──▶ (WS /api/chat/:key) ──▶ server
-//   Browser ◀──ServerFrame── (WS /api/chat/:key) ◀── server
-//   Browser ◀──InboxSession[]── (GET /api/inbox) ◀── server
-// These types are consumed by the routes and by the frontend.
-
-import type { State } from "./stateStore.ts";
-
-export type { State };
+//   Browser ──ClientFrame──▶  WS /api/chat/:key ──▶ chat.ts
+//   Browser ◀───frames──────  WS /api/chat/:key ◀── chat.ts
+//   Browser ◀─InboxSession[]─  GET /api/inbox   ◀── inbox.ts
+//
+// The server→browser frame union is NOT declared here: the only consumer is
+// the browser, which owns it as `ServerFrame`/`ChatPhase` in
+// src/api/chatSocket.ts. Keep that union in step with the JSON sent by
+// server/routes/chat.ts when you add or change a frame.
 
 /**
  * contracts Flow A — the inbox rail (default entry).
@@ -37,20 +37,3 @@ export type InboxSession = {
 export type ClientFrame =
   | { type: "prompt"; text: string; sessionKey?: string } // send a message
   | { type: "abort"; sessionKey?: string }; // stop the current generation
-
-/**
- * contracts Flow C/D — the live status of a conversation turn.
- * Sent to the browser as a { type: "status" } ServerFrame.
- */
-export type Phase = "streaming" | "idle" | "aborted" | "error";
-
-/**
- * contracts Flow C/D — WS server → client (server sends these).
- * Sent over WS /api/chat/:key. The WS route (chat.ts) is a thin subscriber to
- * the bus: it turns each BusEvent into one of these frames.
- */
-export type ServerFrame =
-  | { type: "message.delta"; sessionKey: string; messageId: string; text: string } // a streaming chunk
-  | { type: "message.end"; sessionKey: string; message: import("./stateStore.ts").Message } // the final settled message
-  | { type: "status"; sessionKey: string; phase: Phase } // streaming/idle/aborted/error
-  | { type: "error"; sessionKey: string; errorMessage: string }; // something went wrong

@@ -62,10 +62,6 @@ export function liveFor(key: string): LiveState {
   return drawer(key);
 }
 
-export function isStreaming(key: string): boolean {
-  return live[key]?.streaming ?? false;
-}
-
 // ── history ────────────────────────────────────────────────────────────────
 
 /** Load a thread's settled transcript into its drawer (on selection).

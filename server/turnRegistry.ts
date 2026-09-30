@@ -20,6 +20,4 @@ export const turnRegistry = {
   has: (sessionKey: string): boolean => runningTurns.has(sessionKey),
   add: (sessionKey: string): void => void runningTurns.add(sessionKey),
   delete: (sessionKey: string): void => void runningTurns.delete(sessionKey),
-  /** All currently-running keys (for the bulk view endpoint, later). */
-  keys: (): string[] => [...runningTurns],
 };

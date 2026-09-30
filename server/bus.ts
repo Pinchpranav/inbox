@@ -16,7 +16,8 @@ export type BusEventKind = "message.sent" | "message.delta" | "message.end";
  * The payload that flows through the bus.
  * Produced by relay.ts (after it persists the same event to sqlite); consumed
  * by the WS route (chat.ts) which reads `kind` to decide
- * which ServerFrame to send to the browser.
+ * which frame to send to the browser (that union lives in
+ * src/api/chatSocket.ts, next to its only consumer).
  *
  * Only fields a subscriber actually renders belong here. The durable ordering
  * key (write()'s sequence) and the streaming flag stay in the event log and its

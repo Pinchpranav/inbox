@@ -30,6 +30,9 @@ export interface ChatSocketHandlers {
   onClose?: () => void;
 }
 
+// The server side of these frames is server/routes/chat.ts (which builds them
+// from bus events). This union is the only declaration of the server→browser
+// protocol — server/types.ts deliberately does not repeat it.
 type ServerFrame =
   | { type: "message.delta"; sessionKey: string; messageId: string; text: string }
   | { type: "message.end"; sessionKey: string; message: ChatMessage }

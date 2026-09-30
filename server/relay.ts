@@ -54,13 +54,13 @@ export interface AttachedRelay {
  */
 export function recordUserMessage(store: StateStore, sessionKey: string, text: string): string {
   const messageId = `msg-user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  const sequence = store.write({
+  store.write({
     type: "message.sent",
     payload: { messageId, role: "user", text, sessionKey },
   });
   // `emit` here is the helper function defined below, NOT bus.emit directly.
   // The helper wraps bus.emit(EVENT, ev) so call sites stay short.
-  emit({ sessionKey, kind: "message.sent", messageId, role: "user", text, sequence });
+  emit({ sessionKey, kind: "message.sent", messageId, role: "user", text });
   return messageId;
 }
 
@@ -100,11 +100,13 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
     if (!assistantId || buffer.length === 0) return;
     const chunk = buffer;
     buffer = "";
-    const sequence = store.write({
+    // payload.streaming is the PERSISTED flag (stateStore appends a streaming chunk
+    // instead of replacing it) — it is part of the durable event, not a bus field.
+    store.write({
       type: "message.sent",
       payload: { messageId: assistantId, role: "assistant", text: chunk, streaming: true, sessionKey },
     });
-    emit({ sessionKey, kind: "message.delta", messageId: assistantId, role: "assistant", text: chunk, streaming: true, sequence });
+    emit({ sessionKey, kind: "message.delta", messageId: assistantId, role: "assistant", text: chunk });
   };
   // One frame per second instead of one per token (~70/sec).
   // The interval is cleared at text_end (the terminal event) AND in
@@ -139,11 +141,11 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
       // projection (same behavior as pre-coalescing for text_end).
       buffer = "";
       const full = ae.content ?? streamed;
-      const sequence = store.write({
+      store.write({
         type: "message.sent",
         payload: { messageId: assistantId, role: "assistant", text: full, sessionKey },
       });
-      emit({ sessionKey, kind: "message.end", messageId: assistantId, role: "assistant", text: full, sequence });
+      emit({ sessionKey, kind: "message.end", messageId: assistantId, role: "assistant", text: full });
       assistantId = null;
     }
   });

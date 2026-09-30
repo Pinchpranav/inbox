@@ -10,29 +10,14 @@
 // untouched: the relay only ever settles on text_end, so the trailing buffer
 // never reaches the DB — same as today for an abort before text_end.
 //
-// ── FLOW (who calls what) ─────────────────────────────────────────────
-//   chat.ts (WS route) is the ONLY caller of this file:
-//     1. recordUserMessage(store, key, text)   — persist the user's prompt
-//        BEFORE the engine runs (t3code ordering).
-//     2. attachAssistantRelay(store, key, session) — subscribe to the engine's
-//        event stream; COALESCE deltas in memory, persist + publish the
-//        accumulated chunk once per second.
-//     3. await handle.session.prompt(text)      — run the engine (this is what
-//        fires the subscribe callback below).
-//     4. await relay.finished                   — resolves when text_end fires.
-//   The user's own message is persisted but NOT published (the browser already
-//   rendered it). The bus carries only assistant output.
+// ── FLOW ─────────────────────────────────────────────────────────────
+//   chat.ts ──▶ recordUserMessage()     persist the prompt + publish message.sent
+//   chat.ts ──▶ attachAssistantRelay()  buffer deltas; the 1s flush persists + publishes
+//   chat.ts ──▶ session.prompt()        runs the engine (fires the subscriber above)
+//   text_end ──▶ persist the full text, publish message.end
+//   Only chat.ts calls this file.
 import type { StateStore } from "./stateStore.ts";
 import { bus, EVENT, type BusEvent } from "./bus.ts";
-
-/**
- * What `finished` in function attachAssistantRelay resolves with when a turn completes.
- * Consumed by chat.ts (it awaits relay.finished to know the turn is done).
- */
-export interface RelayResult {
-  streamedText: string;
-  assistantMessageId: string;
-}
 
 /** The shape of the assistant-message sub-event inside a pi message_update. */
 interface AssistantMessageEvent {
@@ -49,11 +34,15 @@ interface PiEvent {
 
 /**
  * The handle attachAssistantRelay returns. Consumed by chat.ts:
- *   - `finished`  — a promise that resolves with RelayResult at text_end.
  *   - `unsubscribe` — detach the relay from the session (cleanup).
+ *
+ * There is deliberately NO "turn finished" promise here. chat.ts treats
+ * `await session.prompt()` as the terminal signal (routes/chat.ts), because a turn
+ * can end without ever emitting text_end (abort, empty reply, extension command),
+ * and a promise that only settles on text_end would then hang forever — taking the
+ * `finally` that clears turnRegistry down with it.
  */
 export interface AttachedRelay {
-  finished: Promise<RelayResult>;
   unsubscribe(): void;
 }
 
@@ -89,7 +78,7 @@ function emit(ev: Omit<BusEvent, "sessionKey"> & { sessionKey: string }): void {
  *   text_delta -> buffered in memory; a 1s interval persists + publishes
  *                 the accumulated chunk as ONE "message.delta" (one WS frame/sec)
  *   text_end   -> persist + publish "message.end" (final full text)
- * Returns a handle whose `finished` promise resolves with the streamed text.
+ * Returns a handle whose unsubscribe() detaches the relay (see AttachedRelay).
  *
  * Called by chat.ts ONCE per prompt, BEFORE the engine runs. The `session`
  * passed in is the AgentSession from piSession.open(). The subscribe callback
@@ -103,9 +92,6 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
   let streamed = "";
   // Buffer for the coalescing interval (see flushInterval below).
   let buffer = "";
-  // this resolveFinished is used on the else-if of text_end
-  let resolveFinished: (r: RelayResult) => void = () => {};
-  const finished = new Promise<RelayResult>((res) => (resolveFinished = res));
 
   // Persist + publish the accumulated buffer as ONE streaming chunk.
   // Called by the 1s interval (and reused by nothing else). The durable write
@@ -144,7 +130,7 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
       buffer += ae.delta ?? "";
     } else if (ae.type === "text_end" && assistantId) {
       // Turn finished: settle with the final full text (REPLACES the streaming
-      // buffer in the projection), publish, then resolve `finished`.
+      // buffer in the projection), then publish.
       // The clear here is the crux: the relay is one-shot, so the timer must
       // die at the exact moment the turn ends, or it leaks forever.
       clearInterval(flushInterval);
@@ -158,7 +144,6 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
         payload: { messageId: assistantId, role: "assistant", text: full, sessionKey },
       });
       emit({ sessionKey, kind: "message.end", messageId: assistantId, role: "assistant", text: full, sequence });
-      resolveFinished({ streamedText: streamed, assistantMessageId: assistantId });
       assistantId = null;
     }
   });
@@ -169,7 +154,6 @@ export function attachAssistantRelay(store: StateStore, sessionKey: string, sess
   // the timer dies on abort too, and that no ghost flush can fire after the
   // turn's terminal frame.
   return {
-    finished,
     unsubscribe: () => {
       clearInterval(flushInterval);
       unsubscribe();

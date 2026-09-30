@@ -3,7 +3,6 @@
   --bg: #ffffff;
   /* chat pane: warm off-white (was pure white) */
   --chat-bg: #f8f8ff;
-  --composer-bg: #edf1f6;
   --bg-soft: #edf1f6;
   --bg-soft-2: #ebebeb;
   --border: #e2e2e5;
@@ -36,7 +35,6 @@
 html[data-theme="dark"] {
   --bg: #0a0a0b;
   --chat-bg: #1e1e22;
-  --composer-bg: var(--chat-bg);
   --bg-soft: #161618;
   --bg-soft-2: #1f1f23;
   --border: #27272b;

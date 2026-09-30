@@ -39,7 +39,7 @@ import {
   stopPolling,
 } from "./state/sessions";
 import * as chat from "./state/chat";
-import type { Message, State } from "./data/domain";
+import type { Message } from "./data/domain";
 
 // ── view-local state ──────────────────────────────────────────────────────
 const sidebarCollapsed = ref(false);

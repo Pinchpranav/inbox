@@ -53,7 +53,6 @@ watch(draft, () => nextTick(autoGrow));
 
 // ── Control row: model picker ───────────────────────────────────────────
 const modelOpen = ref(false);
-const modelRef = ref<HTMLElement | null>(null);
 
 function pickModel(id: string) {
   emit("model", id);
@@ -114,7 +113,7 @@ function onThinkingKeydown(e: KeyboardEvent) {
 
     <!-- Control row -->
     <div class="controls">
-      <div ref="modelRef" class="picker">
+      <div class="picker">
         <button class="pill" :disabled="!models.length" @click="modelOpen = !modelOpen">
           {{ currentModel ? currentModel.name : "Model ▾" }}
         </button>

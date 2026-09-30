@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { stateLabel, type Session, type State } from "../data/domain";
 
-const props = defineProps<{
+defineProps<{
   s: Session;
   selected: boolean;
   menuOpen: boolean;
 }>();
 
-const emit = defineEmits<{
+defineEmits<{
   select: [];
   "set-state": [state: State];
   "toggle-no-inbox": [];

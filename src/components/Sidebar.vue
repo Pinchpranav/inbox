@@ -48,7 +48,7 @@ function connTitle(): string {
 
 const STATES: State[] = ["active", "deferred", "done"];
 
-const collapsed = ref<Record<string, boolean>>({ inbox: false });
+const collapsed = ref<Record<string, boolean>>({});
 const showMore = ref<Record<string, boolean>>({});
 const openMenu = ref<string | null>(null);
 
@@ -404,9 +404,6 @@ function onMove(s: Session) {
 }
 .group-head:hover {
   background: var(--bg-soft-2);
-}
-.inbox-head {
-  width: 100%;
 }
 .group-toggle {
   display: flex;

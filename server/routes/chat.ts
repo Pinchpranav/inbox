@@ -76,7 +76,8 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
 
       return {
         onOpen(_evt, wsc) {
-          // Forward the durable write -> browser. Bus carries assistant delta/end only.
+          // Forward this conversation's bus frames: delta/end only. The user's own
+          // prompt is never published — the browser already rendered its bubble.
           busHandler = (ev: BusEvent) => {
             if (ev.sessionKey !== sessionKey) return; // only this conversation
             if (ev.kind === "message.delta") {
@@ -96,7 +97,6 @@ export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: 
                 } as Message);
               wsc.send(JSON.stringify({ type: "message.end", sessionKey, message }));
             }
-            // kind "message.sent" (user prompt) is intentionally NOT forwarded.
           };
           bus.on(EVENT, busHandler);
         },

@@ -10,7 +10,9 @@
 //   only what a subscriber renders (see BusEvent).
 import { EventEmitter } from "node:events";
 
-export type BusEventKind = "message.sent" | "message.delta" | "message.end";
+// The bus carries ASSISTANT output only. A user prompt is never published: the
+// browser already rendered its own bubble before the server hears about it.
+export type BusEventKind = "message.delta" | "message.end";
 
 /**
  * The payload that flows through the bus.

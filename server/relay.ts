@@ -4,14 +4,16 @@
 // COALESCING: one WS frame per token (~70/sec through nginx +
 // Cloudflare) is the round-trip-count bottleneck, not volume. Deltas are
 // buffered in memory; a 1s interval persists the buffer as ONE streaming
-// chunk (message.sent) and emits ONE bus event — the durable write still
-// happens BEFORE its frame leaves (persist-first invariant). text_end
+// chunk (the store's "message.sent" log event) and emits ONE bus event — the
+// durable write still happens BEFORE its frame leaves (persist-first
+// invariant). text_end
 // REPLACES in the projection as before, so history is unaffected. Abort is
 // untouched: the relay only ever settles on text_end, so the trailing buffer
 // never reaches the DB — same as today for an abort before text_end.
 //
 // ── FLOW ─────────────────────────────────────────────────────────────
-//   chat.ts ──▶ recordUserMessage()     persist the prompt + publish message.sent
+//   chat.ts ──▶ recordUserMessage()     persist the prompt only (bus stays quiet —
+//                                       the browser already rendered its own bubble)
 //   chat.ts ──▶ attachAssistantRelay()  buffer deltas; the 1s flush persists + publishes
 //   chat.ts ──▶ session.prompt()        runs the engine (fires the subscriber above)
 //   text_end ──▶ persist the full text, publish message.end
@@ -47,8 +49,10 @@ export interface AttachedRelay {
 }
 
 /**
- * Persist a user prompt as a message BEFORE invoking the engine (t3code ordering),
- * then publish it on the bus.
+ * Persist a user prompt as a message BEFORE invoking the engine (t3code ordering).
+ * Deliberately does NOT publish it on the bus: the browser already rendered its own
+ * bubble optimistically (src/state/chat.ts send()), and the WS route — the only bus
+ * subscriber — never forwarded this kind anyway. The bus carries assistant output.
  * Called by chat.ts once per prompt, before it runs the engine.
  * Returns the messageId (so the caller can track it).
  */
@@ -58,9 +62,6 @@ export function recordUserMessage(store: StateStore, sessionKey: string, text: s
     type: "message.sent",
     payload: { messageId, role: "user", text, sessionKey },
   });
-  // `emit` here is the helper function defined below, NOT bus.emit directly.
-  // The helper wraps bus.emit(EVENT, ev) so call sites stay short.
-  emit({ sessionKey, kind: "message.sent", messageId, role: "user", text });
   return messageId;
 }
 

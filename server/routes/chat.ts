@@ -1,191 +1,187 @@
-// routes/chat.ts — the WebSocket streaming channel (contracts Flow C/D).
-// This is where the proven pieces get wired together on every prompt:
-//   persist user msg -> open/resume the AgentSession -> attach the relay ->
-//   run the engine -> the relay persists + publishes to the bus -> this route
-//   forwards frames to the browser.
-//
-// Ordering rule (contracts Flow C): every event is persisted (awaited) BEFORE it
-// is published to the bus. The bus carries assistant output; the user's own
-// message is persisted but its message.sent is NOT forwarded (the browser
-// already rendered it).
-//
-// Per-turn lifecycle:
-//   - The PROMPT handler owns the single terminal status frame. It waits on
-//     `session.prompt()` (NOT `relay.finished`), so it can't hang when a turn
-//     ends without a text_end (empty / aborted / silent-error). It reports
-//     "idle" normally, "aborted" if abortRequested was set.
-//   - ABORT only interrupts the engine (`session.abort()`) + sets the
-//     abortRequested flag; it never emits a terminal frame, so prompt and abort
-//     can't race to contradictory states.
-//   - Each relay is unsubscribed in `finally` (it lives for exactly one turn) —
-//     otherwise listeners leak on the reused per-key AgentSession and a stale
-//     relay double-persists/publishes on later turns.
-//
-// ── FLOW (who calls what) ─────────────────────────────────────────────
-//   index.ts (entry):
-//     const { app, injectWebSocket } = createChatRouter(deps)
-//     const server = serve({ fetch: app.fetch, port })
-//     injectWebSocket(server)          // attaches the WS server to the HTTP server
-//   Browser ──ClientFrame──▶ WS /api/chat/:key ──▶ this route
-//   this route ──ServerFrame──▶ Browser
-//
-// NOTE: this factory returns `{ app, injectWebSocket }` (not just `Hono`) because
-// @hono/node-ws needs injectWebSocket(server) called AFTER serve() in index.ts.
-
+// A conversation socket is a view and command channel; the turn outlives it.
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { createNodeWebSocket, type NodeWebSocket } from "@hono/node-ws";
-import type { StateStore, Message } from "../stateStore.ts";
-import type { PiSessionManager, SessionHandle } from "../piSession.ts";
+import type { WSContext } from "hono/ws";
+import type { StateStore } from "../stateStore.ts";
+import type { PiSessionManager } from "../piSession.ts";
 import { recordUserMessage, attachAssistantRelay, type AttachedRelay } from "../relay.ts";
-import { bus, EVENT, type BusEvent } from "../bus.ts";
-import { turnRegistry } from "../turnRegistry.ts";
-import type { ClientFrame } from "../types.ts";
+import { AppBus, EVENT, CONTROL, type BusEvent, type ControlEvent } from "../bus.ts";
+import { TurnRegistry, type Turn } from "../turnRegistry.ts";
+import { authenticate, identity, type AuthOptions, type Identity } from "../auth.ts";
+import { Access } from "../access.ts";
+import type { ServerFrame } from "../types.ts";
 
-/** Everything the chat route needs, injected by index.ts. */
 export interface ChatDeps {
   store: StateStore;
   manager: PiSessionManager;
-  /** Resolve a session key ("agent:<projectId>:<thread>") to its project working dir. */
-  projectDirFor: (sessionKey: string) => string;
-}
-
-/** Normalize a WS message payload (string | Blob | ArrayBuffer | Buffer) to text. */
-function dataToString(data: unknown): string {
-  if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
-  if (ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
-  }
-  return String(data);
+  access: Access;
+  bus: AppBus;
+  turns: TurnRegistry;
+  auth: AuthOptions;
 }
 
 export function createChatRouter(deps: ChatDeps): { app: Hono; injectWebSocket: NodeWebSocket["injectWebSocket"] } {
-  const { store, manager, projectDirFor } = deps;
+  const { store, manager, access, bus, turns } = deps;
+  // Which control events does this socket's user care about? One case per kind.
+  const controlEventReaches = (event: ControlEvent, user: Identity): boolean =>
+    event.type === "access.changed" ? event.email === user.email :
+    event.type === "project.deleted" ? user.isOwner || event.emails.includes(user.email) :
+    access.canProject(user, event.projectId);
   const app = new Hono();
+  app.onError((err, c) => {
+    if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+    console.error("[inbox] request failed", err);
+    return c.json({ error: "request failed" }, 500);
+  });
+  app.use("/api/*", authenticate(deps.auth));
+  app.use("/api/*", access.middleware);
+  app.get("/api/me", (c) => {
+    const { email, isOwner } = identity(c);
+    return c.json({ email, isOwner });
+  });
   const wsHub = createNodeWebSocket({ app });
 
-  app.get(
-    "/api/chat/:key",
-    wsHub.upgradeWebSocket((c) => {
-      // "key" is guaranteed by the route path /api/chat/:key, so it's never undefined.
-      const sessionKey = c.req.param("key") as string;
-      // Per-connection state:
-      let currentHandle: SessionHandle | undefined; // the open AgentSession, for abort
-      let abortRequested = false; // set by the abort handler; read by the prompt handler (which owns the terminal frame)
-      let busHandler: ((ev: BusEvent) => void) | null = null; // for cleanup via bus.off
-
-      return {
-        onOpen(_evt, wsc) {
-          // Forward this conversation's bus frames: delta/end only. The user's own
-          // prompt is never published — the browser already rendered its bubble.
-          busHandler = (ev: BusEvent) => {
-            if (ev.sessionKey !== sessionKey) return; // only this conversation
-            if (ev.kind === "message.delta") {
-              wsc.send(JSON.stringify({ type: "message.delta", sessionKey, messageId: ev.messageId, text: ev.text }));
-            } else if (ev.kind === "message.end") {
-              // The final message is already in the store (persist-before-publish).
-              const message =
-                store.getMessages(ev.sessionKey).find((m) => m.id === ev.messageId) ??
-                ({
-                  id: ev.messageId,
-                  sessionKey: ev.sessionKey,
-                  role: ev.role,
-                  text: ev.text,
-                  isStreaming: false,
-                  timestamp: Date.now(),
-                  idx: 0,
-                } as Message);
-              wsc.send(JSON.stringify({ type: "message.end", sessionKey, message }));
-            }
-          };
-          bus.on(EVENT, busHandler);
-        },
-
-        onMessage(_evt, wsc) {
-          let frame: ClientFrame;
-          try {
-            frame = JSON.parse(dataToString(_evt.data)) as ClientFrame;
-          } catch {
-            wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: "invalid JSON frame" }));
-            return;
+  app.get("/api/events", wsHub.upgradeWebSocket((c) => {
+    const user = identity(c);
+    let handler: ((event: ControlEvent) => void) | undefined;
+    let expiry: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (handler) bus.off(CONTROL, handler);
+      clearTimeout(expiry);
+    };
+    return {
+      onOpen(_event, ws) {
+        expiry = setTimeout(() => ws.close(1008, "authentication expired"), Math.min(user.expiresAt - Date.now(), 2147483647));
+        handler = (event) => {
+          if (controlEventReaches(event, user) && user.expiresAt > Date.now()) {
+            // Only identifiers needed to invalidate the recipient's own cache.
+            const { type, projectId } = event;
+            ws.send(JSON.stringify({ type, projectId,
+              ...(event.type === "access.changed" ? { granted: event.granted } : {}),
+              ...(event.type === "session.deleted" ? { sessionKey: event.sessionKey } : {}),
+            }));
           }
+        };
+        bus.on(CONTROL, handler);
+        ws.send(JSON.stringify({ type: "ready" }));
+      },
+      onClose: cleanup,
+      onError: cleanup,
+    };
+  }));
 
-          if (frame.type === "prompt") {
-            // Validate the prompt text before persisting (a non-string would write a NULL row).
-            if (typeof frame.text !== "string" || !frame.text.trim()) {
-              wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: "prompt text is required" }));
-              return;
-            }
-            const text = frame.text; // narrowed here (inside the async closure TS resets it)
-            void (async () => {
-              // One turn at a time PER CONVERSATION (not per connection): a second
-              // prompt on the same key would interleave inside one AgentSession.
-              if (turnRegistry.has(sessionKey)) {
-                wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "error" }));
-                return;
-              }
-              turnRegistry.add(sessionKey);
-              abortRequested = false;
-              // The relay is scoped here so its `finally` unsubscribe always runs (stale-relay fix).
-              let relay: AttachedRelay | null = null;
-              try {
-                // ① persist user msg (NOT forwarded to browser — it already rendered it)
-                recordUserMessage(store, sessionKey, text);
-                // ② open or resume the conversation's AgentSession
-                const handle = await manager.open(sessionKey, projectDirFor(sessionKey));
-                currentHandle = handle;
-                // ③ attach the relay: persists + publishes each assistant delta/end
-                // piSession types subscribe as `(ev: unknown)` while the relay (proven) expects
-                // `PiEvent`; both are proven files, so we adapt at the seam with a cast.
-                relay = attachAssistantRelay(
-                  store,
-                  sessionKey,
-                  handle.session as Parameters<typeof attachAssistantRelay>[2],
-                );
-                // ④ run the engine (fires the relay's subscribe callback). Awaiting the prompt
-                // resolves when the turn is done — this, NOT `relay.finished`, is the terminal
-                // signal, so we can't hang if no text_end fires (empty/aborted/silent-error turn).
-                await handle.session.prompt(text);
-                // ⑤ the prompt handler owns the single terminal frame (no race with abort).
-                if (abortRequested) {
-                  wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "aborted" }));
-                } else {
-                  wsc.send(JSON.stringify({ type: "status", sessionKey, phase: "idle" }));
-                }
-              } catch (err) {
-                wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: String(err) }));
-              } finally {
-                relay?.unsubscribe(); // detach this turn's relay from the shared AgentSession (stale-relay fix)
-                turnRegistry.delete(sessionKey); // the turn is over (idle/aborted/error all pass through here)
-              }
-            })();
-          } else if (frame.type === "abort") {
-            void (async () => {
-              // Abort only interrupts the engine + sets the flag; the prompt handler owns the
-              // terminal frame, so we never get a second conflicting status here.
-              abortRequested = true;
-              try {
-                if (currentHandle) await currentHandle.session.abort();
-              } catch (err) {
-                wsc.send(JSON.stringify({ type: "error", sessionKey, errorMessage: String(err) }));
-              }
-            })();
-          }
-        },
-
-        onClose() {
-          if (busHandler) bus.off(EVENT, busHandler);
-          busHandler = null;
-          currentHandle = undefined;
-        },
-        onError() {
-          if (busHandler) bus.off(EVENT, busHandler);
-          busHandler = null;
-          currentHandle = undefined;
-        },
+  app.get("/api/chat/:key", wsHub.upgradeWebSocket((c) => {
+    const key = c.req.param("key")!;
+    const projectId = access.session(c, key).projectId;
+    const user = identity(c);
+    let chatHandler: ((event: BusEvent) => void) | undefined;
+    let controlHandler: ((event: ControlEvent) => void) | undefined;
+    let expiry: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (chatHandler) bus.off(EVENT, chatHandler);
+      if (controlHandler) bus.off(CONTROL, controlHandler);
+      clearTimeout(expiry);
+    };
+    const openSocket = (ws: WSContext) => {
+      if (!access.canProject(user, projectId) || !store.getSession(key)) {
+        ws.close(1008, "not found");
+        return;
+      }
+      const send = (frame: ServerFrame) => ws.send(JSON.stringify(frame));
+      expiry = setTimeout(() => ws.close(1008, "authentication expired"), Math.min(user.expiresAt - Date.now(), 2147483647));
+      chatHandler = (event) => {
+        if (event.sessionKey !== key) return;
+        if (!access.canProject(user, projectId) || !store.getSession(key)) {
+          ws.close(1008, "not found");
+          return;
+        }
+        if (event.kind === "message.delta") send({ type: "message.delta", messageId: event.messageId, text: event.text });
+        else if (event.kind === "message.end") send({ type: "message.end", message: event.message });
+        else send({ type: "status", phase: event.phase, errorMessage: event.errorMessage });
       };
-    }),
-  );
+      controlHandler = (event) => {
+        if (event.projectId === projectId && (!access.canProject(user, projectId) || !store.getSession(key))) {
+          cleanup();
+          ws.close(1008, "not found");
+        }
+      };
+      // No await between subscription and snapshot: subsequent frames follow it.
+      bus.on(EVENT, chatHandler);
+      bus.on(CONTROL, controlHandler);
+      send({ type: "snapshot", messages: store.getMessages(key), running: turns.has(key) });
+    };
+    // Runs detached from onMessage so a slow turn never blocks other frames.
+    const runTurn = async (turn: Turn, text: string, ws: WSContext) => {
+      let relay: AttachedRelay | undefined;
+      let phase: "idle" | "aborted" | "error" = "idle";
+      let errorMessage: string | undefined;
+      try {
+        // Open before adding this prompt: restored history must not seed it twice.
+        turn.handle = await manager.open(key, store.getProject(projectId)!.dir);
+        recordUserMessage(store, bus, key, text, user.email);
+        if (access.canProject(user, projectId)) {
+          try { ws.send(JSON.stringify({ type: "accepted" } satisfies ServerFrame)); }
+          catch { /* A disconnected sender does not stop an accepted turn. */ }
+        }
+        if (!turn.abortRequested) {
+          relay = attachAssistantRelay(store, bus, key, turn.handle.session as Parameters<typeof attachAssistantRelay>[3]);
+          await turn.handle.session.prompt(text);
+        }
+        if (turn.abortRequested) phase = "aborted";
+      } catch (err) {
+        console.error("[inbox] turn failed", err);
+        phase = "error";
+        errorMessage = "generation failed";
+      } finally {
+        try { relay?.unsubscribe(); }
+        catch (err) { console.error("[inbox] relay cleanup failed", err); phase = "error"; errorMessage = "could not save response"; }
+        turns.delete(key);
+        bus.chat({ kind: "status", sessionKey: key, phase, errorMessage });
+      }
+    };
+    return {
+      onOpen(_event, ws) { openSocket(ws); },
+      onMessage(event, ws) {
+        const error = (errorMessage: string) => ws.send(JSON.stringify({ type: "error", errorMessage } satisfies ServerFrame));
+        if (!access.canProject(user, projectId) || !store.getSession(key)) {
+          ws.close(1008, "not found");
+          return;
+        }
+        let frame: { type?: unknown; text?: unknown };
+        try {
+          frame = JSON.parse(String(event.data));
+          if (!frame || typeof frame !== "object") throw new Error();
+        } catch { error("invalid JSON frame"); return; }
 
+        if (frame.type === "abort") {
+          const turn = turns.get(key);
+          if (turn) {
+            turn.abortRequested = true;
+            if (turn.handle) void turn.handle.session.abort().catch(() => error("could not stop generation"));
+          }
+          return;
+        }
+        if (frame.type !== "prompt") {
+          error("unknown frame");
+          return;
+        }
+        if (typeof frame.text !== "string" || !frame.text.trim()) {
+          error("prompt text is required");
+          return;
+        }
+        const text = frame.text;
+        const turn = turns.start(key);
+        if (!turn) {
+          error("generation already running");
+          return;
+        }
+        bus.chat({ kind: "status", sessionKey: key, phase: "streaming" });
+        void runTurn(turn, text, ws);
+      },
+      onClose: cleanup,
+      onError: cleanup,
+    };
+  }));
   return { app, injectWebSocket: wsHub.injectWebSocket };
 }

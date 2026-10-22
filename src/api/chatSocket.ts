@@ -1,106 +1,60 @@
-// WS chat client for the Hono backend (server/routes/chat.ts).
-//
-// Connects to WS /api/chat/:key, sends ClientFrames ({type:"prompt"} / {type:"abort"}),
-// and dispatches ServerFrames to the caller:
-//   message.delta → onDelta(text)      (a streaming chunk — append to the live text)
-//   message.end   → onEnd(message)     (the final settled assistant message)
-//   status        → onStatus(phase)   (streaming / idle / aborted / error)
-//   error         → onError(message)
-//
-// The server runs one turn per connection: after a prompt it streams deltas, then
-// sends message.end + a terminal status (idle/aborted/error). The caller closes the
-// socket when the turn settles.
-
-export type ChatPhase = "streaming" | "idle" | "aborted" | "error";
-
 import { baseUrl } from "../config";
+import type { ClientFrame, ServerFrame, ControlFrame } from "../../server/types";
 
-export interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
+function socketUrl(path: string): string {
+  const url = new URL(`${baseUrl()}${path}`, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.href;
 }
 
-export interface ChatSocketHandlers {
-  onDelta: (text: string) => void;
-  onEnd: (message: ChatMessage) => void;
-  onStatus: (phase: ChatPhase) => void;
-  onError: (message: string) => void;
-  onOpen?: () => void;
-  onClose?: () => void;
-}
-
-// The server side of these frames is server/routes/chat.ts (which builds them
-// from bus events). This union is the only declaration of the server→browser
-// protocol — server/types.ts deliberately does not repeat it.
-type ServerFrame =
-  | { type: "message.delta"; sessionKey: string; messageId: string; text: string }
-  | { type: "message.end"; sessionKey: string; message: ChatMessage }
-  | { type: "status"; sessionKey: string; phase: ChatPhase }
-  | { type: "error"; sessionKey: string; errorMessage: string };
-
-export class ChatSocket {
+/** Reconnect to a fresh snapshot; never replay a submitted command. */
+class LiveSocket<Frame> {
   private ws: WebSocket | null = null;
-  private key: string;
-  private handlers: ChatSocketHandlers;
+  private retry: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
 
-  constructor(key: string, handlers: ChatSocketHandlers) {
-    this.key = key;
-    this.handlers = handlers;
-  }
+  constructor(private path: string, private onFrame: (frame: Frame) => void, private onDisconnect: (forbidden: boolean) => void, private retryAfterExpiry = false) {}
 
-  /** Open the socket. The caller should send a prompt from onOpen (or right after). */
   connect(): void {
-    // Resolve against the same base URL the REST client uses (localStorage →
-    // VITE_BACKEND_URL → same-origin), so WS and HTTP always hit the same backend.
-    const base = baseUrl().replace(/^http/, "ws"); // http→ws, https→wss; "" stays "" (same-origin)
-    const url = `${base}/api/chat/${encodeURIComponent(this.key)}`;
-    const ws = new WebSocket(url);
+    if (this.stopped) return;
+    const ws = new WebSocket(socketUrl(this.path));
     this.ws = ws;
-    ws.onopen = () => this.handlers.onOpen?.();
-    ws.onmessage = (e) => this.handle(parseFrame(String(e.data)));
-    ws.onclose = () => this.handlers.onClose?.();
-    ws.onerror = () => this.handlers.onError("websocket error");
+    ws.onmessage = (event) => {
+      if (this.stopped || this.ws !== ws) return;
+      try { this.onFrame(JSON.parse(String(event.data)) as Frame); }
+      catch { ws.close(); }
+    };
+    ws.onclose = (event) => {
+      if (this.stopped || this.ws !== ws) return;
+      const forbidden = event.code === 1008;
+      this.onDisconnect(forbidden);
+      if (!forbidden || this.retryAfterExpiry) this.retry = setTimeout(() => this.connect(), 1500);
+    };
+    ws.onerror = () => ws.close();
   }
 
-  sendPrompt(text: string): void {
-    this.ws?.send(JSON.stringify({ type: "prompt", text }));
-  }
-
-  sendAbort(): void {
-    this.ws?.send(JSON.stringify({ type: "abort" }));
+  send(frame: ClientFrame): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(frame));
+    return true;
   }
 
   close(): void {
-    if (this.ws) {
-      this.ws.onclose = null;
-      this.ws.close();
-      this.ws = null;
-    }
-  }
-
-  private handle(frame: ServerFrame): void {
-    switch (frame.type) {
-      case "message.delta":
-        this.handlers.onDelta(frame.text);
-        break;
-      case "message.end":
-        this.handlers.onEnd(frame.message);
-        break;
-      case "status":
-        this.handlers.onStatus(frame.phase);
-        break;
-      case "error":
-        this.handlers.onError(frame.errorMessage);
-        break;
-    }
+    this.stopped = true;
+    if (this.retry) clearTimeout(this.retry);
+    this.ws?.close();
+    this.ws = null;
   }
 }
 
-function parseFrame(raw: string): ServerFrame {
-  try {
-    return JSON.parse(raw) as ServerFrame;
-  } catch {
-    return { type: "error", sessionKey: "", errorMessage: "invalid frame from server" };
+export class ChatSocket extends LiveSocket<ServerFrame> {
+  constructor(key: string, onFrame: (frame: ServerFrame) => void, onDisconnect: (forbidden: boolean) => void) {
+    super(`/api/chat/${encodeURIComponent(key)}`, onFrame, onDisconnect);
+  }
+}
+
+export class ControlSocket extends LiveSocket<ControlFrame> {
+  constructor(onFrame: (frame: ControlFrame) => void, onDisconnect: (forbidden: boolean) => void) {
+    super("/api/events", onFrame, onDisconnect, true);
   }
 }

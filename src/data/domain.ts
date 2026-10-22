@@ -28,6 +28,8 @@ export interface Message {
   id: string;
   role: "user" | "assistant";
   text: string;
+  authorEmail?: string | null;
+  isStreaming?: boolean;
 }
 
 /** A model as returned by GET /api/models. */

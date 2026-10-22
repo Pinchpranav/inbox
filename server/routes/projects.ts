@@ -15,6 +15,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { StateStore, Project, Session, State } from "../stateStore.ts";
+import type { Access } from "../access.ts";
+import type { AppBus } from "../bus.ts";
+import type { TurnRegistry } from "../turnRegistry.ts";
+import type { PiSessionManager } from "../piSession.ts";
+import { identity, normalizeEmail, validEmail } from "../auth.ts";
 
 const STATES: readonly State[] = ["active", "deferred", "done"];
 
@@ -69,16 +74,17 @@ function scaffoldIdentityFiles(dir: string) {
   }
 }
 
-export function createProjectsRouter(store: StateStore): Hono {
+export function createProjectsRouter(store: StateStore, access: Access, bus: AppBus, turns: TurnRegistry, manager: PiSessionManager): Hono {
   const app = new Hono();
 
   // GET /api/projects — all projects.
   app.get("/api/projects", (c) => {
-    return c.json(store.getProjects());
+    return c.json(store.getProjects().filter((p) => access.canProject(identity(c), p.id)));
   });
 
   // POST /api/projects — create a project + scaffold its identity .md files.
   app.post("/api/projects", async (c) => {
+    access.owner(c);
     let body: { name?: string; dir?: string };
     try {
       body = await c.req.json();
@@ -104,7 +110,7 @@ export function createProjectsRouter(store: StateStore): Hono {
     } catch {
       return c.json({ ok: false, error: "could not scaffold project dir" }, 500);
     }
-    store.write({ type: "project.created", payload: { project } });
+    access.write(c, { type: "project.created", payload: { project } });
     return c.json({ ok: true, project: { id: project.id } });
   });
 
@@ -120,7 +126,7 @@ export function createProjectsRouter(store: StateStore): Hono {
     if (!isState(body.state)) {
       return c.json({ ok: false, error: "state must be active|deferred|done" }, 400);
     }
-    store.write({ type: "project.state", payload: { projectId, state: body.state } });
+    access.write(c, { type: "project.state", payload: { projectId, state: body.state } });
     return c.json({ ok: true });
   });
 
@@ -153,8 +159,51 @@ export function createProjectsRouter(store: StateStore): Hono {
       noInbox: false,
       lastTouchedAt: null,
     };
-    store.write({ type: "session.created", payload: { session } });
+    access.write(c, { type: "session.created", payload: { session } });
     return c.json({ ok: true, session: { key } });
+  });
+
+  app.get("/api/projects/:id/users", (c) => {
+    access.owner(c);
+    return c.json(store.getProjectUsers(c.req.param("id")));
+  });
+
+  app.put("/api/projects/:id/users", async (c) => {
+    access.owner(c);
+    const body = await c.req.json().catch(() => null);
+    const email = typeof body?.email === "string" ? normalizeEmail(body.email) : "";
+    if (!validEmail(email)) return c.json({ error: "valid email is required" }, 400);
+    const projectId = c.req.param("id");
+    access.write(c, { type: "project.access.granted", payload: { projectId, email } });
+    bus.control({ type: "access.changed", projectId, email, granted: true });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/projects/:id/users/:email", (c) => {
+    access.owner(c);
+    const projectId = c.req.param("id");
+    const email = normalizeEmail(c.req.param("email"));
+    access.write(c, { type: "project.access.revoked", payload: { projectId, email } });
+    bus.control({ type: "access.changed", projectId, email, granted: false });
+    return c.json({ ok: true });
+  });
+
+  app.patch("/api/projects/:id/name", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    if (typeof body?.name !== "string" || !body.name.trim()) return c.json({ error: "name is required" }, 400);
+    access.write(c, { type: "project.renamed", payload: { projectId: c.req.param("id"), name: body.name.trim() } });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/projects/:id", (c) => {
+    const projectId = c.req.param("id");
+    const sessions = store.getSessions(projectId);
+    if (sessions.some((s) => turns.has(s.key))) return c.json({ error: "stop generation before deleting the project" }, 409);
+    const emails = store.getProjectUsers(projectId);
+    access.write(c, { type: "project.deleted", payload: { projectId } });
+    for (const session of sessions) manager.dispose(session.key);
+    bus.control({ type: "project.deleted", projectId, emails });
+    return c.json({ ok: true });
   });
 
   return app;

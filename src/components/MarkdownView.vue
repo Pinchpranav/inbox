@@ -3,13 +3,7 @@ import { computed } from "vue";
 import MarkdownIt from "markdown-it";
 import taskLists from "markdown-it-task-lists";
 
-// Mirror openclaw's renderer (markdown-it) but in plain Vue. Config:
-//   html:false  -> raw HTML is escaped (safe, no DOMPurify needed for MVP)
-//   breaks:true -> single newlines become <br>
-//   linkify     -> bare URLs auto-linked
-//   strikethrough + task lists (read-only)
-// Code blocks render in grayscale monospace (no syntax-token colors) to keep
-// "color = data only".
+// Disable raw HTML because rendered Markdown is inserted with v-html.
 const md = new MarkdownIt({
   html: false,
   breaks: true,

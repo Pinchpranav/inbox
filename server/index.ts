@@ -1,20 +1,13 @@
-// server/index.ts — entry: build the store + session manager, mount all four routers,
-// serve HTTP + WS, keep the process alive, and shut down gracefully.
+// server/index.ts — where the backend starts.
 //
-// ── FLOW (assembly line) ─────────────────────────────────────────────
-//   main() -> StateStore(dbPath) + rebuildProjections()
-//           -> resolvePiExtensions()                               (optional extras)
-//           -> PiSessionManager.create(store, { agentDir, cwd, extensions })   (async)
-//           -> buildApp({ store, manager }) -> { app, injectWebSocket }
-//           -> serve({ fetch: app.fetch, port })                   (HTTP)
-//           -> injectWebSocket(server)                             (WS, AFTER serve)
-//   Graceful shutdown (SIGINT/SIGTERM): manager.disposeAll() -> store.close()
+//   buildApp()  assembles the HTTP + WebSocket app but opens no port.
+//   main()      starts the database, the agent manager and the HTTP server,
+//               then cleans everything up on shutdown.
 //
-// Note the ordering contract from routes/chat.ts: createChatRouter returns
-// { app, injectWebSocket }, and injectWebSocket(server) MUST be called after serve().
-// We mount the REST routers onto the same Hono `app` that the chat
-// router built, so the node-ws upgrade handler is registered on the exact app
-// instance that gets served.
+// Ordering rules this file exists to enforce:
+//   1. the database is caught up before anything is served
+//   2. the chat router is built first — it owns the WebSocket handling
+//   3. WebSockets are attached only after the server is listening
 
 import { join, dirname } from "node:path";
 import { mkdirSync } from "node:fs";
@@ -28,63 +21,67 @@ import { createProjectsRouter } from "./routes/projects.ts";
 import { createSessionsRouter } from "./routes/sessions.ts";
 import { createInboxRouter } from "./routes/inbox.ts";
 import { createChatRouter } from "./routes/chat.ts";
+import { Access } from "./access.ts";
+import { AppBus } from "./bus.ts";
+import { TurnRegistry } from "./turnRegistry.ts";
+import type { AuthOptions } from "./auth.ts";
 
-/** Everything buildApp needs. Both are created by main() (store sync, manager async). */
+/** The pieces buildApp() needs. */
 export interface AppDeps {
   store: StateStore;
   manager: PiSessionManager;
+  auth?: AuthOptions;
 }
 
 /**
- * Build the Hono app: mount /api/projects, /api/sessions, /api/inbox, and /api/chat.
- * Returns the app plus the WS injector (from the chat router), which the
- * caller MUST invoke after serve().
+ * Assemble the app: create the shared helpers and mount every route.
+ * Returns the app plus a function that attaches WebSockets — call it after
+ * the HTTP server is listening.
  */
 export function buildApp(deps: AppDeps): { app: Hono; injectWebSocket: (server: ServerType) => void } {
   const { store, manager } = deps;
+  const access = new Access(store); // who is allowed to touch what
+  const bus = new AppBus(); // pushes live updates to connected sockets
+  const turns = new TurnRegistry(); // at most one running turn per conversation
 
-  /** Resolve a session key ("agent:<projectId>:<thread>") to its project working dir. */
-  const projectDirFor = (sessionKey: string): string => {
-    const projectId = sessionKey.split(":")[1] ?? "";
-    const project = store.getProjects().find((p) => p.id === projectId);
-    return project?.dir ?? process.cwd();
+  // The chat router builds the app and owns the WebSocket upgrade handling, so it
+  // goes first and the other routers are mounted onto its app. Auth settings come
+  // from the environment; tests can pass their own.
+  const auth = deps.auth ?? {
+    ownerEmail: process.env.INBOX_OWNER_EMAIL,
+    teamDomain: process.env.CF_ACCESS_TEAM_DOMAIN,
+    audience: process.env.CF_ACCESS_AUD,
+    publicOrigin: process.env.INBOX_PUBLIC_ORIGIN,
+    devEmail: process.env.INBOX_DEV_EMAIL,
   };
+  const { app, injectWebSocket } = createChatRouter({ store, manager, access, bus, turns, auth });
 
-  // Build the chat router first — its `app` carries the node-ws upgrade handler, so we
-  // keep THAT instance as the root app and mount the REST routers onto it.
-  const { app, injectWebSocket } = createChatRouter({ store, manager, projectDirFor });
-
-  app.route("/", createProjectsRouter(store));
-  app.route("/", createSessionsRouter(store, manager));
-  app.route("/", createInboxRouter(store));
+  app.route("/", createProjectsRouter(store, access, bus, turns, manager));
+  app.route("/", createSessionsRouter(store, manager, access, bus, turns));
+  app.route("/", createInboxRouter(store, access));
 
   return { app, injectWebSocket };
 }
 
 export interface MainDeps {
-  dbPath: string;
-  agentDir: string;
-  cwd: string;
-  port?: number;
+  dbPath: string; // SQLite file (created on first run)
+  agentDir: string; // pi's config directory
+  cwd: string; // default working directory for agents
+  port?: number; // defaults to 8787
 }
 
 /**
- * Full assembly: open the store, rebuild projections, create the manager, build the app,
- * serve HTTP + WS, and install graceful-shutdown handlers. Returns handles for tests.
+ * Start the backend: open the database, create the agent manager, serve HTTP +
+ * WebSockets, and shut down cleanly. Returns its handles (handy for tests).
  */
 export async function main(deps: MainDeps): Promise<{ app: Hono; store: StateStore; manager: PiSessionManager; server: ServerType }> {
-  // The sqlite file lives in a subdir (default .inbox/) that node:sqlite will
-  // NOT create for us — on a fresh clone it doesn't exist and DatabaseSync
-  // throws. Create it so the backend can boot anywhere. (dbPath is always set
-  // here: main() is called with deps.dbPath from the isMain block or a test.)
+  // The default database lives in .inbox/, which may not exist yet — create it.
   mkdirSync(dirname(deps.dbPath), { recursive: true });
 
   const store = new StateStore(deps.dbPath);
-  store.rebuildProjections();
+  store.rebuildProjections(); // catch the read tables up with the event log after a restart
 
-  // Optional pi extensions (browser tools, and any added later). Resolved here so the
-  // manager receives its collaborators instead of reaching for process.env itself —
-  // which extensions this app loads is app assembly, not session mechanics.
+  // Optional pi extensions (e.g. browser tools) loaded into every agent session.
   const extensions = resolvePiExtensions();
 
   const manager = await PiSessionManager.create(store, {
@@ -96,15 +93,16 @@ export async function main(deps: MainDeps): Promise<{ app: Hono; store: StateSto
   const { app, injectWebSocket } = buildApp({ store, manager });
   const port = deps.port ?? 8787;
 
-  const server = serve({ fetch: app.fetch, port });
-  injectWebSocket(server); // attach WS AFTER serve — required by @hono/node-ws
+  // Loopback only: from outside, nginx/cloudflared proxies to this port.
+  const server = serve({ fetch: app.fetch, port, hostname: "127.0.0.1" });
+  injectWebSocket(server); // must run after serve()
   console.log(`[inbox] listening on http://localhost:${port} (WS + HTTP)`);
 
   const shutdown = () => {
     console.log("[inbox] shutting down...");
-    server.close(); // stop accepting new connections
-    manager.disposeAll(); // close every open AgentSession
-    store.close(); // close the SQLite store
+    server.close(); // stop accepting connections
+    manager.disposeAll(); // close every open agent session
+    store.close(); // close the database
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -114,7 +112,7 @@ export async function main(deps: MainDeps): Promise<{ app: Hono; store: StateSto
 }
 
 /** Run directly: `npx tsx server/index.ts` (or `node server/index.ts` after a build). */
-const isMain =
+const isMain = // true when this file was launched, false when a test only imports it
   process.argv[1] !== undefined && fileURLToPath(import.meta.url) === fileURLToPath(pathToFileURL(process.argv[1]).href);
 
 if (isMain) {

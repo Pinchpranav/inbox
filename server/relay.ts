@@ -1,165 +1,72 @@
-// relay.ts — capture pi AgentSession events, PERSIST them to the store
-// (persist-first, t3code ordering), THEN PUBLISH them onto the in-memory bus.
-//
-// COALESCING: one WS frame per token (~70/sec through nginx +
-// Cloudflare) is the round-trip-count bottleneck, not volume. Deltas are
-// buffered in memory; a 1s interval persists the buffer as ONE streaming
-// chunk (the store's "message.sent" log event) and emits ONE bus event — the
-// durable write still happens BEFORE its frame leaves (persist-first
-// invariant). text_end
-// REPLACES in the projection as before, so history is unaffected. Abort is
-// untouched: the relay only ever settles on text_end, so the trailing buffer
-// never reaches the DB — same as today for an abort before text_end.
-//
-// ── FLOW ─────────────────────────────────────────────────────────────
-//   chat.ts ──▶ recordUserMessage()     persist the prompt only (bus stays quiet —
-//                                       the browser already rendered its own bubble)
-//   chat.ts ──▶ attachAssistantRelay()  buffer deltas; the 1s flush persists + publishes
-//   chat.ts ──▶ session.prompt()        runs the engine (fires the subscriber above)
-//   text_end ──▶ persist the full text, publish message.end
-//   Only chat.ts calls this file.
+// relay.ts — persist pi engine events first, then publish to the bus.
+// Deltas buffer and flush; settle replaces with the persisted full text.
+
+import { randomUUID } from "node:crypto";
 import type { StateStore } from "./stateStore.ts";
-import { bus, EVENT, type BusEvent } from "./bus.ts";
+import type { AppBus } from "./bus.ts";
 
-/** The shape of the assistant-message sub-event inside a pi message_update. */
-interface AssistantMessageEvent {
-  type: string;
-  delta?: string;
-  content?: string;
-}
-
-/** The pi SDK event shape the relay listens for (only message_update matters). */
 interface PiEvent {
   type: string;
-  assistantMessageEvent?: AssistantMessageEvent;
+  assistantMessageEvent?: { type: string; delta?: string; content?: string };
 }
 
-/**
- * The handle attachAssistantRelay returns. Consumed by chat.ts:
- *   - `unsubscribe` — detach the relay from the session (cleanup).
- *
- * There is deliberately NO "turn finished" promise here. chat.ts treats
- * `await session.prompt()` as the terminal signal (routes/chat.ts), because a turn
- * can end without ever emitting text_end (abort, empty reply, extension command),
- * and a promise that only settles on text_end would then hang forever — taking the
- * `finally` that clears turnRegistry down with it.
- */
-export interface AttachedRelay {
-  unsubscribe(): void;
+export interface AttachedRelay { unsubscribe(): void; }
+
+/** Persist before publishing, including human messages seen by other viewers. */
+export function recordUserMessage(store: StateStore, bus: AppBus, sessionKey: string, text: string, authorEmail: string): void {
+  const messageId = randomUUID();
+  store.write({ type: "message.sent", payload: { messageId, role: "user", text, sessionKey, authorEmail } });
+  const message = store.getMessages(sessionKey).find((m) => m.id === messageId)!;
+  bus.chat({ kind: "message.end", sessionKey, message });
 }
 
-/**
- * Persist a user prompt as a message BEFORE invoking the engine (t3code ordering).
- * Deliberately does NOT publish it on the bus: the browser already rendered its own
- * bubble optimistically (src/state/chat.ts send()), and the WS route — the only bus
- * subscriber — never forwarded this kind anyway. The bus carries assistant output.
- * Called by chat.ts once per prompt, before it runs the engine.
- * Returns the messageId (so the caller can track it).
- */
-export function recordUserMessage(store: StateStore, sessionKey: string, text: string): string {
-  const messageId = `msg-user-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-  store.write({
-    type: "message.sent",
-    payload: { messageId, role: "user", text, sessionKey },
-  });
-  return messageId;
-}
-
-/**
- * Publish a bus event (persist has already happened by the caller).
- * Internal helper — wraps bus.emit(EVENT, ev). Not exported.
- */
-function emit(ev: Omit<BusEvent, "sessionKey"> & { sessionKey: string }): void {
-  bus.emit(EVENT, ev as BusEvent);
-}
-
-/**
- * Attach to an AgentSession, PERSIST its output persist-first, THEN publish
- * each event to the bus (coalesced):
- *   text_delta -> buffered in memory; a 1s interval persists + publishes
- *                 the accumulated chunk as ONE "message.delta" (one WS frame/sec)
- *   text_end   -> persist + publish "message.end" (final full text)
- * Returns a handle whose unsubscribe() detaches the relay (see AttachedRelay).
- *
- * Called by chat.ts ONCE per prompt, BEFORE the engine runs. The `session`
- * passed in is the AgentSession from piSession.open(). The subscribe callback
- * below fires each time the engine emits an event (triggered by
- * session.prompt(text)).
- */
-export function attachAssistantRelay(store: StateStore, sessionKey: string, session: {
-  subscribe(cb: (ev: PiEvent) => void): () => void;
+/** Buffer assistant deltas; finish or stop with the persisted full text. */
+export function attachAssistantRelay(store: StateStore, bus: AppBus, sessionKey: string, session: {
+  subscribe(cb: (event: PiEvent) => void): () => void;
 }): AttachedRelay {
-  let assistantId: string | null = null;
-  let streamed = "";
-  // Buffer for the coalescing interval (see flushInterval below).
+  let messageId: string | null = null;
+  let fullText = "";
   let buffer = "";
 
-  // Persist + publish the accumulated buffer as ONE streaming chunk.
-  // Called by the 1s interval (and reused by nothing else). The durable write
-  // happens here BEFORE the bus event — persist-first invariant is preserved.
   const flush = () => {
-    if (!assistantId || buffer.length === 0) return;
-    const chunk = buffer;
+    if (!messageId || !buffer) return;
+    const text = buffer;
     buffer = "";
-    // payload.streaming is the PERSISTED flag (stateStore appends a streaming chunk
-    // instead of replacing it) — it is part of the durable event, not a bus field.
-    store.write({
-      type: "message.sent",
-      payload: { messageId: assistantId, role: "assistant", text: chunk, streaming: true, sessionKey },
-    });
-    emit({ sessionKey, kind: "message.delta", messageId: assistantId, role: "assistant", text: chunk });
+    store.write({ type: "message.sent", payload: { messageId, role: "assistant", text, streaming: true, sessionKey } });
+    bus.chat({ kind: "message.delta", sessionKey, messageId, text });
   };
-  // One frame per second instead of one per token (~70/sec).
-  // The interval is cleared at text_end (the terminal event) AND in
-  // unsubscribe() — abort never fires text_end, so without the second clear
-  // an aborted turn would leak the timer and could flush one ghost
-  // message.delta after the "aborted" status.
-  const flushInterval = setInterval(flush, 1000);
-
-  const unsubscribe = session.subscribe((ev: PiEvent) => {
-    if (ev.type !== "message_update" || !ev.assistantMessageEvent) return;
-    const ae = ev.assistantMessageEvent;
-
-    if (ae.type === "text_start") {
-      // Begin a new assistant message: allocate its id, reset the buffers.
-      // No store write yet — the first interval flush creates the row.
-      assistantId = `msg-assistant-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      streamed = "";
+  const settle = () => {
+    if (!messageId) return;
+    const id = messageId;
+    store.write({ type: "message.sent", payload: { messageId: id, role: "assistant", text: fullText, sessionKey } });
+    messageId = null;
+    buffer = "";
+    const message = store.getMessages(sessionKey).find((m) => m.id === id)!;
+    bus.chat({ kind: "message.end", sessionKey, message });
+  };
+  const timer = setInterval(flush, 1000);
+  const detach = session.subscribe((event) => {
+    const update = event.assistantMessageEvent;
+    if (event.type !== "message_update" || !update) return;
+    if (update.type === "text_start") {
+      settle();
+      messageId = randomUUID();
+      fullText = "";
       buffer = "";
-    } else if (ae.type === "text_delta" && assistantId) {
-      // A streaming chunk: append to the in-memory buffer. Nothing is written
-      // or published until the 1s interval flushes it.
-      streamed += ae.delta ?? "";
-      buffer += ae.delta ?? "";
-    } else if (ae.type === "text_end" && assistantId) {
-      // Turn finished: settle with the final full text (REPLACES the streaming
-      // buffer in the projection), then publish.
-      // The clear here is the crux: the relay is one-shot, so the timer must
-      // die at the exact moment the turn ends, or it leaks forever.
-      clearInterval(flushInterval);
-      // Drop anything still sitting in the coalescing buffer — the
-      // final write below carries the full text and replaces it in the
-      // projection (same behavior as pre-coalescing for text_end).
-      buffer = "";
-      const full = ae.content ?? streamed;
-      store.write({
-        type: "message.sent",
-        payload: { messageId: assistantId, role: "assistant", text: full, sessionKey },
-      });
-      emit({ sessionKey, kind: "message.end", messageId: assistantId, role: "assistant", text: full });
-      assistantId = null;
+    } else if (update.type === "text_delta" && messageId) {
+      const text = update.delta ?? "";
+      fullText += text;
+      buffer += text;
+    } else if (update.type === "text_end" && messageId) {
+      fullText = update.content ?? fullText;
+      settle();
     }
   });
-
-  // unsubscribe() is the single deterministic cleanup
-  // point chat.ts calls in `finally` on BOTH paths (normal + abort). Clearing
-  // the interval here (idempotent alongside the text_end clear) guarantees
-  // the timer dies on abort too, and that no ghost flush can fire after the
-  // turn's terminal frame.
   return {
-    unsubscribe: () => {
-      clearInterval(flushInterval);
-      unsubscribe();
+    unsubscribe() {
+      clearInterval(timer);
+      detach();
+      settle();
     },
   };
 }

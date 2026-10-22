@@ -1,18 +1,21 @@
-// routes/sessions.ts — a single conversation (contracts Flow B1 read, Flow E writes).
-// Reads come off the projections; each write appends a domain event via store.write()
-// then returns { ok: true }. A move keeps the transcript (old messages stay under the old
-// key) but resets memory (a fresh key = a fresh thread identity).
+// routes/sessions.ts — one conversation: read it, change its state/model/thinking, move it.
+// Writes append an event via store.write() and answer { ok: true }; reads come off projections.
 //
 // ── FLOW ─────────────────────────────────────────────────────────────
-//   GET   /api/sessions/:key/messages   → getMessages(key)    (Message[], history, not live)
-//   PATCH /api/sessions/:key/state      → write(session.state)       → { ok:true }
-//   PATCH /api/sessions/:key/noInbox    → write(session.noInbox)     → { ok:true }
-//   POST  /api/sessions/:key/move       → write(session.created) w/ new key → { ok, session:{key} }
+//   GET   /api/sessions/:key/messages    store.getMessages(key)
+//   GET   /api/sessions/:key/status      turnRegistry.has(key)
+//   PATCH /api/sessions/:key/{state,noInbox,model,thinking}
+//                                        store.write(session.*)
+//   POST  /api/sessions/:key/move        store.write(session.created) under a new key
+//   GET   /api/models                    manager.getModels()
+//   GET|POST /api/sessions/zdr           manager.getZdr() | setZdr()
 
 import { Hono } from "hono";
 import type { StateStore, Session, State } from "../stateStore.ts";
 import type { PiSessionManager } from "../piSession.ts";
-import { turnRegistry } from "../turnRegistry.ts";
+import type { TurnRegistry } from "../turnRegistry.ts";
+import type { Access } from "../access.ts";
+import type { AppBus } from "../bus.ts";
 
 const STATES: readonly State[] = ["active", "deferred", "done"];
 
@@ -20,34 +23,31 @@ function isState(v: unknown): v is State {
   return typeof v === "string" && (STATES as readonly string[]).includes(v);
 }
 
-/** Pull the <projectId> out of a key ("agent:<projectId>:<thread>..."). */
+/** "agent:<projectId>:<thread>" → projectId. */
 function projectIdOfKey(key: string): string {
   return key.split(":")[1] ?? "";
 }
 
-/** Pull the <thread> tail out of a key (the part after "agent:<projectId>:"). */
+/** "agent:<projectId>:<thread>" → thread. */
 function threadOfKey(key: string): string {
   const parts = key.split(":");
   return parts.slice(2).join(":");
 }
 
-export function createSessionsRouter(store: StateStore, manager: PiSessionManager): Hono {
+export function createSessionsRouter(store: StateStore, manager: PiSessionManager, access: Access, bus: AppBus, turns: TurnRegistry): Hono {
   const app = new Hono();
 
-  // GET /api/sessions/:key/messages — reload transcript (not the live stream).
   app.get("/api/sessions/:key/messages", (c) => {
     const key = c.req.param("key");
     return c.json(store.getMessages(key));
   });
 
-  // GET /api/sessions/:key/status — is a turn running on this conversation?
-  // The WS route (chat.ts) maintains the registry; this REST route only reads it.
+  // Read-only peek: chat.ts owns the registry.
   app.get("/api/sessions/:key/status", (c) => {
     const key = c.req.param("key");
-    return c.json({ sessionKey: key, running: turnRegistry.has(key) });
+    return c.json({ sessionKey: key, running: turns.has(key) });
   });
 
-  // PATCH /api/sessions/:key/state — move a conversation through active/deferred/done.
   app.patch("/api/sessions/:key/state", async (c) => {
     const sessionKey = c.req.param("key");
     let body: { state?: unknown };
@@ -59,11 +59,11 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     if (!isState(body.state)) {
       return c.json({ ok: false, error: "state must be active|deferred|done" }, 400);
     }
-    store.write({ type: "session.state", payload: { sessionKey, state: body.state } });
+    access.write(c, { type: "session.state", payload: { sessionKey, state: body.state } });
     return c.json({ ok: true });
   });
 
-  // PATCH /api/sessions/:key/noInbox — mute/unmute a conversation (no state change).
+  // Mute only; state is untouched.
   app.patch("/api/sessions/:key/noInbox", async (c) => {
     const sessionKey = c.req.param("key");
     let body: { noInbox?: unknown };
@@ -75,17 +75,16 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     if (typeof body.noInbox !== "boolean") {
       return c.json({ ok: false, error: "noInbox must be a boolean" }, 400);
     }
-    store.write({ type: "session.noInbox", payload: { sessionKey, noInbox: body.noInbox } });
+    access.write(c, { type: "session.noInbox", payload: { sessionKey, noInbox: body.noInbox } });
     return c.json({ ok: true });
   });
 
-  // GET /api/models — the catalog for the composer picker.
-  // {id, name, thinkingLevelMap, input}; thinkingLevelMap undefined = no reasoning.
+  // {id, name, thinkingLevelMap, input}; no thinkingLevelMap means the model does not reason.
   app.get("/api/models", (c) => {
     return c.json(manager.getModels());
   });
 
-  // PATCH /api/sessions/:key/model — persist the chosen model (event-sourced).
+  // Rejected unless the id is one of our curated models.
   app.patch("/api/sessions/:key/model", async (c) => {
     const sessionKey = c.req.param("key");
     let body: { model?: unknown };
@@ -100,11 +99,10 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     if (!manager.getModels().some((m) => m.id === body.model)) {
       return c.json({ ok: false, error: "unknown model id" }, 400);
     }
-    store.write({ type: "session.model", payload: { sessionKey, modelId: body.model } });
+    access.write(c, { type: "session.model", payload: { sessionKey, modelId: body.model } });
     return c.json({ ok: true });
   });
 
-  // PATCH /api/sessions/:key/thinking — persist the chosen thinking level (event-sourced).
   app.patch("/api/sessions/:key/thinking", async (c) => {
     const sessionKey = c.req.param("key");
     let body: { level?: unknown };
@@ -120,12 +118,12 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     if (!valid.includes(body.level)) {
       return c.json({ ok: false, error: "invalid thinking level" }, 400);
     }
-    store.write({ type: "session.thinking", payload: { sessionKey, level: body.level } });
+    access.write(c, { type: "session.thinking", payload: { sessionKey, level: body.level } });
     return c.json({ ok: true });
   });
 
-  // POST /api/sessions/:key/move — re-home a conversation under a new project.
-  // Transcript kept (old messages stay under the old key); memory resets (new key/thread).
+  // Moving re-keys: same thread tail under the destination project, so the conversation
+  // starts fresh. The old messages stay under the old key.
   app.post("/api/sessions/:key/move", async (c) => {
     const oldKey = c.req.param("key");
     let body: { destProjectId?: unknown };
@@ -142,13 +140,14 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
     if (!known) {
       return c.json({ ok: false, error: "destination project not found" }, 404);
     }
+    access.session(c, oldKey);
+    access.project(c, destProjectId);
 
-    // Find the source session (by key within its own project) so we keep its name.
+    // Keep the old name.
     const srcProjectId = projectIdOfKey(oldKey);
     const src = store.getSessions(srcProjectId).find((s) => s.key === oldKey);
     const name = src?.name ?? "New conversation";
 
-    // New key = same thread tail under the destination project → fresh identity.
     const newKey = `agent:${destProjectId}:${threadOfKey(oldKey)}`;
     const session: Session = {
       key: newKey,
@@ -158,17 +157,35 @@ export function createSessionsRouter(store: StateStore, manager: PiSessionManage
       noInbox: false,
       lastTouchedAt: null,
     };
-    store.write({ type: "session.created", payload: { session } });
+    access.write(c, { type: "session.created", payload: { session } });
     return c.json({ ok: true, session: { key: newKey } });
   });
 
-  // GET /api/sessions/zdr — current global ZDR state.
+  // Global, not per conversation.
   app.get("/api/sessions/zdr", (c) => c.json({ zdr: manager.getZdr() }));
 
-  // POST /api/sessions/zdr — toggle global ZDR. Anything but zdr:true counts as false.
+  // Anything but zdr:true counts as false.
   app.post("/api/sessions/zdr", async (c) => {
+    access.owner(c);
     const body = (await c.req.json().catch(() => null)) as { zdr?: boolean } | null;
     await manager.setZdr(body?.zdr === true);
+    return c.json({ ok: true });
+  });
+
+  app.patch("/api/sessions/:key/name", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    if (typeof body?.name !== "string" || !body.name.trim()) return c.json({ error: "name is required" }, 400);
+    access.write(c, { type: "session.renamed", payload: { sessionKey: c.req.param("key"), name: body.name.trim() } });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/sessions/:key", (c) => {
+    const sessionKey = c.req.param("key");
+    const session = access.session(c, sessionKey);
+    if (turns.has(sessionKey)) return c.json({ error: "stop generation before deleting the conversation" }, 409);
+    access.write(c, { type: "session.deleted", payload: { sessionKey } });
+    manager.dispose(sessionKey);
+    bus.control({ type: "session.deleted", projectId: session.projectId, sessionKey });
     return c.json({ ok: true });
   });
 

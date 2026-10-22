@@ -20,6 +20,7 @@ cd "$REPO" || exit 1
 
 # Load secrets (gitignored deploy/.env: COMMANDCODE_API_KEY + optional overrides).
 [ -f deploy/.env ] && { set -a; . deploy/.env; set +a; }
+export NODE_ENV=production
 
 echo "[inbox-backend] starting at $(date '+%Y-%m-%d %H:%M:%S') (pid $$)"
 # Use the repo-local tsx bin (no dependence on npx/PATH inside systemd).

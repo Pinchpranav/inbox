@@ -19,12 +19,14 @@ Start the backend with `COMMANDCODE_API_KEY` set:
 ```sh
 # Bash
 export COMMANDCODE_API_KEY='your-api-key'
+export INBOX_DEV_EMAIL='pranav0202@gmail.com'
 pnpm exec tsx server/index.ts
 ```
 
 ```powershell
 # PowerShell
 $env:COMMANDCODE_API_KEY = 'your-api-key'
+$env:INBOX_DEV_EMAIL = 'pranav0202@gmail.com'
 pnpm exec tsx server/index.ts
 ```
 
@@ -37,6 +39,8 @@ pnpm dev
 Open http://localhost:5174. The backend defaults to port 8787. Set
 `INBOX_BACKEND_TARGET` when starting Vite if the backend uses another address.
 Conversation data is stored in `.inbox/inbox.db` by default (`INBOX_DB` overrides it).
+`INBOX_DEV_EMAIL` is an explicit localhost identity for development; it is forbidden
+in production. Deployed requests use verified Cloudflare Access identity instead.
 
 ## Validation
 

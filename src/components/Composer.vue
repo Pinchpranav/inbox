@@ -10,6 +10,8 @@ const props = defineProps<{
   modelId: string | null;
   thinkingLevel: string | null;
   streaming: boolean;
+  disabled: boolean;
+  draft: string;
 }>();
 
 const emit = defineEmits<{
@@ -17,10 +19,11 @@ const emit = defineEmits<{
   abort: [];
   model: [id: string];
   thinking: [level: string];
+  "update:draft": [text: string];
 }>();
 
 // ── Input shell ────────────────────────────────────────────────────────
-const draft = ref("");
+const draft = computed({ get: () => props.draft, set: (text: string) => emit("update:draft", text) });
 const taEl = ref<HTMLTextAreaElement | null>(null);
 
 const currentModel = computed<ModelEntry | undefined>(() =>
@@ -36,9 +39,8 @@ function autoGrow() {
 
 function send() {
   const text = draft.value.trim();
-  if (!text || props.streaming) return;
+  if (!text || props.streaming || props.disabled) return;
   emit("send", text);
-  draft.value = "";
   nextTick(autoGrow);
 }
 
@@ -102,19 +104,20 @@ function onThinkingKeydown(e: KeyboardEvent) {
       <textarea
         ref="taEl"
         v-model="draft"
+        :disabled="streaming || disabled"
         class="input"
         :placeholder="streaming ? 'Generating…' : 'Message. Enter to send, Shift+Enter for newline.'"
         rows="1"
         @keydown="onKeydown"
       />
-      <button v-if="!streaming" class="send" :disabled="!draft.trim()" @click="send">↑</button>
-      <button v-else class="stop" title="Stop" @click="$emit('abort')">■</button>
+      <button v-if="!streaming" class="send" :disabled="disabled || !draft.trim()" @click="send">↑</button>
+      <button v-else class="stop" :disabled="disabled" title="Stop" @click="$emit('abort')">■</button>
     </div>
 
     <!-- Control row -->
     <div class="controls">
       <div class="picker">
-        <button class="pill" :disabled="!models.length" @click="modelOpen = !modelOpen">
+        <button class="pill" :disabled="!models.length || streaming || disabled" @click="modelOpen = !modelOpen">
           {{ currentModel ? currentModel.name : "Model ▾" }}
         </button>
         <div v-if="modelOpen" class="menu" @mouseleave="modelOpen = false">
@@ -133,7 +136,7 @@ function onThinkingKeydown(e: KeyboardEvent) {
       <button
         class="pill thinking"
         :class="{ disabled: !supportsThinking }"
-        :disabled="!supportsThinking"
+        :disabled="!supportsThinking || streaming || disabled"
         :title="supportsThinking ? 'Click to cycle · Shift+Tab for previous' : 'This model has no thinking levels'"
         @click="cycleThinking(1)"
         @keydown="onThinkingKeydown"

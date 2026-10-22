@@ -1,46 +1,23 @@
-// bus.ts — the in-process event bus (a Node EventEmitter).
-//
-// Connects the durable write to the live push: the relay publishes after the
-// sqlite commit, the WS route forwards to the browser. Mirrors t3code's
-// eventPubSub + streamDomainEvents.
-//
-// ── FLOW ─────────────────────────────────────────────────────────────
-//   relay.ts ──bus.emit(EVENT, ev)──▶ bus ──bus.on(EVENT, cb)──▶ chat.ts
-//   The relay persists FIRST, then publishes the same event; the bus copy carries
-//   only what a subscriber renders (see BusEvent).
 import { EventEmitter } from "node:events";
+import type { Message } from "./stateStore.ts";
 
-// The bus carries ASSISTANT output only. A user prompt is never published: the
-// browser already rendered its own bubble before the server hears about it.
-export type BusEventKind = "message.delta" | "message.end";
+export type ChatPhase = "streaming" | "idle" | "aborted" | "error";
+export type BusEvent =
+  | { kind: "message.delta"; sessionKey: string; messageId: string; text: string }
+  | { kind: "message.end"; sessionKey: string; message: Message }
+  | { kind: "status"; sessionKey: string; phase: ChatPhase; errorMessage?: string };
 
-/**
- * The payload that flows through the bus.
- * Produced by relay.ts (after it persists the same event to sqlite); consumed
- * by the WS route (chat.ts) which reads `kind` to decide
- * which frame to send to the browser (that union lives in
- * src/api/chatSocket.ts, next to its only consumer).
- *
- * Only fields a subscriber actually renders belong here. The durable ordering
- * key (write()'s sequence) and the streaming flag stay in the event log and its
- * projection payload: the bus is a fire-and-forget fan-out, and when chat.ts
- * needs the settled row it re-reads it from the store (persist-first).
- */
-export interface BusEvent {
-  sessionKey: string;
-  kind: BusEventKind;
-  messageId: string;
-  role: "user" | "assistant";
-  text: string;
+export type ControlEvent =
+  | { type: "access.changed"; projectId: string; email: string; granted: boolean }
+  | { type: "project.deleted"; projectId: string; emails: string[] }
+  | { type: "session.deleted"; projectId: string; sessionKey: string };
+
+export const EVENT = "chat";
+export const CONTROL = "control";
+
+/** Local fan-out. Each app instance owns its subscriptions and turns. */
+export class AppBus extends EventEmitter {
+  constructor() { super(); this.setMaxListeners(0); }
+  chat(event: BusEvent): void { this.emit(EVENT, event); }
+  control(event: ControlEvent): void { this.emit(CONTROL, event); }
 }
-
-/** The event name the relay emits and subscribers listen for. */
-export const EVENT = "event";
-
-/**
- * The single shared bus instance. relay.ts emits on it; the WS route
- * subscribes to it. setMaxListeners(0) = unlimited subscribers (later: one
- * per open browser tab).
- */
-export const bus = new EventEmitter();
-bus.setMaxListeners(0); // unlimited subscribers (later: one per open browser tab)

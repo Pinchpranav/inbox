@@ -1,145 +1,111 @@
-# Deployment Runbook — inbox on the VPS (build-a8l)
+# VPS deployment
 
-**Status:** DONE (2026-08-19). This is the *actual* how-we-did-it + how-to-reproduce
-doc, written after the fact. The design intent lives in
-`direction/deployment plan.md`; this file is the operational record and the
-clean-box reproduction path.
+Requires Linux with systemd, Node.js 24+, pnpm, git, curl, and nginx.
+Run commands from the repository root. nginx/systemd steps require sudo.
 
----
+## First setup
 
-## 0. Final topology (what's running)
-
-```
-Browser → Cloudflare Access (email allowlist) → cloudflared tunnel
-    → nginx (127.0.0.1:8085)          ← NOT :80 (Coolify owns :80)
-        ├── /           serves built SPA (dist/)          ← pnpm build
-        └── /api/*      reverse-proxy (HTTP + WS) → backend :8787
-                                             ↑
-                              systemd: inbox-backend.service
-                              (Restart=on-failure, survives reboot)
-```
-
-| Piece | Runs as | Listener |
-|---|---|---|
-| Backend (`npx tsx server/index.ts`) | systemd `inbox-backend.service` → `deploy/backend.sh` | `127.0.0.1:8787` |
-| Frontend (`dist/`) | nginx (apt) | `127.0.0.1:8085` |
-| `/api` proxy (REST + WS) | nginx rule | `127.0.0.1:8085` |
-| Tunnel + TLS + access | cloudflared + Cloudflare Access | owner-managed |
-
-Key facts about this box:
-- **Coolify runs its own nginx on `:80`** — our nginx must stay on loopback `:8085`.
-- **`:443` is Tailscale**, not HTTP.
-- **node is under nvm** (`~/.nvm/versions/node/v24.19.0/bin`) — systemd does NOT
-  load shell profiles, so the unit must put the nvm bin on `PATH` explicitly.
-- **No passwordless sudo** — `sudo` prompts for a password.
-
----
-
-## 1. Reproduce on a clean box (the happy path)
-
-### 1.1 Prereqs
-```bash
-node -v && git --version          # node 24+ (ships corepack)
-corepack enable pnpm              # installs pnpm
-sudo apt update && sudo apt install -y nginx
-```
-
-### 1.2 Clone + secrets + deps
 ```bash
 git clone https://github.com/Pinchpranav/inbox.git
 cd inbox
-cp deploy/.env.example deploy/.env
-nano deploy/.env                  # paste COMMANDCODE_API_KEY
-pnpm install                      # pnpm-workspace.yaml approves esbuild's build script
+pnpm install
+sudo apt-get update
+sudo apt-get install -y nginx
+nano deploy/.env
 ```
 
-### 1.3 Smoke-test the backend before systemd
-```bash
-./deploy/backend.sh               # foreground; Ctrl-C after test
-# 2nd SSH:  curl -s http://localhost:8787/api/projects   -> []   (200 = backend + DB up)
+Set this in `deploy/.env`:
+
+```dotenv
+COMMANDCODE_API_KEY=your-api-key
+CF_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+CF_ACCESS_AUD=your-access-application-audience
+INBOX_PUBLIC_ORIGIN=https://your-inbox-domain.example
 ```
 
-### 1.4 Install the systemd unit (paths + user + nvm PATH)
+Optional overrides: `PORT`, `INBOX_BACKEND`, `INBOX_LISTEN`, `INBOX_DB`,
+`INBOX_AGENT_DIR`. If you change `PORT`, update `INBOX_BACKEND` to match.
+The owner defaults to `pranav0202@gmail.com`; `INBOX_OWNER_EMAIL` can override it.
+
+In Cloudflare Zero Trust, use the team domain and the Application Audience (AUD)
+from this app's Access application. Protect the entire hostname, including
+`/api/*` and WebSocket paths. nginx forwards Cloudflare's signed identity token;
+the backend verifies its signature, issuer, audience, and expiry.
+[Cloudflare's validation documentation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)
+describes these values.
+
+`backend.sh` sets `NODE_ENV=production`. Do not set `INBOX_DEV_EMAIL` on the VPS;
+it is rejected in production. The backend binds to `127.0.0.1`, and nginx should
+remain on loopback behind the tunnel.
+
 ```bash
-sudo cp deploy/inbox-backend.service /etc/systemd/system/
+chmod +x deploy/backend.sh
+sudo cp -f deploy/inbox-backend.service /etc/systemd/system/
 sudo sed -i "s|/path/to/inbox|$PWD|g" /etc/systemd/system/inbox-backend.service
-# If node is under nvm, ensure the unit's Environment=PATH has the nvm bin dir
-# (the committed unit ships with /home/pranav/.nvm/versions/node/v24.19.0/bin).
+sudo nano /etc/systemd/system/inbox-backend.service
+```
+
+Set `User` to the deployment user and `Environment=PATH` to include the actual
+Node.js bin directory. systemd does not load nvm or shell profiles.
+
+```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now inbox-backend
-curl -s http://localhost:8787/api/projects          # []  (200 = backend + DB up)
+bash deploy/start.sh
 ```
 
-### 1.5 Bring up nginx + everything
-```bash
-bash deploy/start.sh              # builds dist/, installs nginx.conf on :8085,
-                                  # auto-sudoes the nginx/systemd steps, health-checks
-```
+nginx defaults to `127.0.0.1:8085`; the backend defaults to port `8787`.
+If using Cloudflare, point the tunnel at `http://127.0.0.1:8085` and configure
+Access separately.
 
-### 1.6 Verify
-```bash
-curl -s  http://127.0.0.1:8085/api/projects          # []  (readiness probe)
-curl -sI http://127.0.0.1:8085/ | head -1          # HTTP/1.1 200 (SPA)
-curl -s  http://127.0.0.1:8085/ | head -3         # <!doctype html> ...
-# WS upgrade through nginx:
-curl -sI -H "Connection: Upgrade" -H "Upgrade: websocket" \
-     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: SGVsbG8=" \
-     http://127.0.0.1:8085/api/chat/ws-probe         # expect 101 / Upgrade header
-sudo nginx -T | grep -A3 connection_upgrade      # map is live
-```
+## Deploy updates
 
-### 1.7 Tunnel
-Point cloudflared's origin at **`http://127.0.0.1:8085`** (NOT `:80`). Configure
-Cloudflare Access with your email allowlist. Done.
-
----
-
-## 2. Problems faced + solutions
-
-| # | Symptom | Root cause | Fix |
-|---|---|---|---|
-| 1 | `Command 'pnpm' not found` | pnpm not installed | `corepack enable pnpm` (Node 24 ships corepack) |
-| 2 | `Command 'nginx' not found` | nginx not installed | `sudo apt install -y nginx` |
-| 3 | Coolify owns `:80`; `:443` is Tailscale | port conflict | Our nginx listens on loopback `127.0.0.1:8085` (`INBOX_LISTEN` override) |
-| 4 | `systemctl is-system-running` → `degraded` | benign (fwupd, networkd-wait-online) | ignore |
-| 5 | `ERR_PNPM_IGNORED_BUILDS: esbuild...` | pnpm v10+ blocks postinstall scripts by default | `pnpm approve-builds`; durable fix = `pnpm-workspace.yaml` with `allowBuilds` (pnpm v11 schema — the `pnpm` field in `package.json` is **ignored** in v11) |
-| 6 | `./deploy/backend.sh: Permission denied` | exec bit lost in git (Windows `core.fileMode=false`) | `git update-index --chmod=+x deploy/backend.sh deploy/start.sh` |
-| 7 | `start.sh: line 40: /etc/nginx/conf.d/inbox.conf: Permission denied` | ran as non-root; nginx config write needs root | `start.sh` now auto-sudoes the nginx + systemctl steps |
-| 8 | `git pull` aborts: untracked `pnpm-workspace.yaml` would be overwritten | pnpm auto-generated it locally | `rm -f pnpm-workspace.yaml && git pull` (committed copy is authoritative) |
-| 9 | systemd: `Unit ... has a bad unit file setting` | **two** issues: (a) `StartLimitIntervalSec/Burst` in `[Service]` (must be `[Unit]`), (b) **missing `ExecStart=`** (the fatal one) | moved StartLimit to `[Unit]`; added `ExecStart=/path/to/inbox/deploy/backend.sh` |
-| 10 | `tsx: exec: node: not found` (crash loop) | node under nvm; systemd doesn't load shell profile | add nvm bin dir to unit's `Environment=PATH=...` |
-| 11 | nginx `500` on `/` (but `/api` works) | `/home/pranav` was `750`; www-data can't traverse it → `stat()` EACCES → `try_files` redirection cycle | `chmod o+x /home/pranav` (751) — traverse bit only |
-| 12 | `sudo` needs a password (no passwordless) | box config | run `sudo` interactively; for non-interactive reads, mount the log into a throwaway root container |
-
-### The two "gotcha" fixes worth remembering
-- **nginx WS `map`** (code fix, pre-VPS): `proxy_set_header Connection $connection_upgrade`
-  needs a `map $http_upgrade $connection_upgrade { default upgrade; '' close; }`
-  in the http context, or WebSocket chat dies while REST works.
-- **systemd unit must have `ExecStart=`** — a service with no `ExecStart` is
-  invalid ("Service has no ExecStart=... Refusing"). Easy to miss when the unit
-  is written from scratch.
-
----
-
-## 3. Files that matter
-
-- `deploy/start.sh` — one-command bring-up (build, nginx, systemd, health). Auto-sudoes root steps.
-- `deploy/backend.sh` — single-shot `exec ./node_modules/.bin/tsx server/index.ts` launcher (no while-loop; sources `deploy/.env`).
-- `deploy/inbox-backend.service` — systemd unit (User, WorkingDirectory, ExecStart, nvm PATH, Restart=on-failure).
-- `deploy/nginx.conf` — SPA + `/api` proxy + WS `map`; `__DIST__`/`__BACKEND__`/`__LISTEN__` substituted by start.sh.
-- `deploy/.env` — gitignored secrets (`COMMANDCODE_API_KEY`).
-- `pnpm-workspace.yaml` — pnpm v11 `allowBuilds` (esbuild/genai/protobufjs).
-
-## 4. Ops cheat-sheet
+Check for local changes before pulling:
 
 ```bash
-systemctl status inbox-backend          # is the backend up?
-journalctl -u inbox-backend -f          # follow backend output (like tmux attach)
-sudo nginx -t && sudo nginx -s reload  # after editing nginx config
-bash deploy/start.sh                   # deploy new code (build, nginx, RESTART backend)
+git status --short
+git pull --ff-only
+pnpm install
+bash deploy/start.sh
 ```
 
-> **start.sh now restarts the backend on every run.** Earlier versions skipped the
-> restart when the service was already active — after a `git pull` you had to run
-> `sudo systemctl restart inbox-backend` manually or the OLD code kept serving.
-> That trap is fixed: step 4/6 restarts the service when it is active.
+`start.sh` builds the frontend, configures nginx, and restarts the backend.
+Keep `deploy/.env` and `.inbox/inbox.db` across deployments.
+
+## Verify and troubleshoot
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8085/api/me
+curl -fsSI http://127.0.0.1:8085/
+systemctl status inbox-backend
+journalctl -u inbox-backend -n 100 --no-pager
+sudo nginx -t
+sudo tail -n 50 /var/log/nginx/error.log
+```
+
+The unauthenticated API check should return 401; the static frontend check should
+return 200. Open the public domain through Cloudflare Access and verify `/api/me`
+shows your email and owner status. Missing or incorrect Access configuration
+returns 401 rather than implicitly identifying a visitor as the owner.
+
+Use the project's ⋯ → Users menu to add an email that is already allowed by your
+Cloudflare Access policy. Project sharing does not change Cloudflare policies or
+send invitations. A new user without project grants sees no projects. New and
+existing projects are private until shared.
+
+Verify with two users: both see the same conversation, sender emails, live output,
+and Generating… lock; either user can Stop and continue. Remove one user's grant
+while their project is open and confirm the view clears immediately and cannot
+be reopened.
+
+Authorized users can rename/delete projects and conversations. Deletion hides
+app data and keeps the event log and working-directory files. Stop generation
+before deleting. Global ZDR and project creation/user management are owner-only.
+
+- `node: not found`: correct the unit's `Environment=PATH`, then reload systemd.
+- Backend start limit reached: fix the logged error, then run
+  `sudo systemctl reset-failed inbox-backend` and `sudo systemctl restart inbox-backend`.
+- nginx cannot serve the SPA: its worker needs directory traversal permission
+  through the repository's parent directories and read access to `dist/`.
+- nginx port conflict: keep the listener on a free loopback port; this VPS uses
+  8085 because Coolify occupies port 80.

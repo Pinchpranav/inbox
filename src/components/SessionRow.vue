@@ -12,6 +12,8 @@ defineEmits<{
   "set-state": [state: State];
   "toggle-no-inbox": [];
   move: [];
+  rename: [];
+  delete: [];
   "toggle-menu": [];
 }>();
 
@@ -42,6 +44,8 @@ const STATES: State[] = ["active", "deferred", "done"];
         </button>
         <hr />
         <button class="dd-item" @click="$emit('move')">Move to project…</button>
+        <button class="dd-item" @click="$emit('rename')">Rename</button>
+        <button class="dd-item" @click="$emit('delete')">Delete</button>
       </div>
     </div>
   </div>

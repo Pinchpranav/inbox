@@ -18,9 +18,12 @@ const props = defineProps<{
   models: ModelEntry[];
   modelId: string | null;
   thinkingLevel: string | null;
+  disabled: boolean;
+  draft: string;
+  error: string;
 }>();
 
-const emit = defineEmits<{ send: [text: string]; abort: []; model: [id: string]; thinking: [level: string] }>();
+const emit = defineEmits<{ send: [text: string]; abort: []; model: [id: string]; thinking: [level: string]; "update:draft": [text: string] }>();
 
 const scrollEl = ref<HTMLDivElement | null>(null);
 const autoFollow = ref(true);
@@ -120,6 +123,7 @@ watch(
         <div class="messages-inner">
           <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
             <div v-if="m.role === 'user'" class="bubble">
+              <span class="author">{{ m.authorEmail || 'Previous user' }}</span>
               <p class="msg-text">{{ m.text }}</p>
             </div>
             <MarkdownView v-else :text="m.text" />
@@ -140,11 +144,15 @@ watch(
       <button v-if="showEnd" class="scroll-end" @click="scrollToEnd">↓ Scroll to end</button>
 
       <!-- Composer -->
+      <p v-if="error" class="chat-error" role="alert">{{ error }}</p>
       <Composer
         :models="models"
         :model-id="modelId"
         :thinking-level="thinkingLevel"
         :streaming="streaming"
+        :disabled="disabled"
+        :draft="draft"
+        @update:draft="emit('update:draft', $event)"
         @send="emit('send', $event)"
         @abort="emit('abort')"
         @model="emit('model', $event)"
@@ -155,6 +163,8 @@ watch(
 </template>
 
 <style scoped>
+.author { display: block; font-size: 11px; opacity: 0.65; margin-bottom: 5px; overflow-wrap: anywhere; }
+.chat-error { margin: 8px 24px; font-size: 13px; color: var(--text-muted); }
 .chat {
   display: flex;
   flex-direction: column;

@@ -1,30 +1,23 @@
-// stateStore.ts — event-sourcing + projections, logic copied from t3code
-// (apps/server/src/persistence/* + apps/server/src/orchestration/*).
+// stateStore.ts — the only file that touches the database. Every fact is
+// appended to an event log first (the durable truth); the tables the app reads
+// are that log applied in order, so they can be rebuilt at any time. write()
+// is the one way in, and node:sqlite is synchronous, so a fact is on disk
+// before write() returns.
 //
-// Model: an append-only `orchestration_events` log is the source of truth;
-// denormalized `projection_*` read models are rebuilt from it via upserts.
-// The user prompt is persisted BEFORE the engine runs (awaited, in a
-// transaction), then published to the in-memory bus post-commit.
-//
-// Uses node:sqlite (built-in, requires Node >= 22.5).
-//
-// ── FLOW (who calls what) ─────────────────────────────────────────────
-//   index.ts (entry):
-//     const store = new StateStore(dbPath); store.rebuildProjections();
-//     ... on shutdown: store.close()
-//   relay.ts (writes): store.write({...})  — user prompt + assistant deltas
-//   routes (reads): getProjects / getSessions / getMessages / getInbox
-//   piSession.ts (reads): store.getMessages(key)  — to seed a resumed session
-//   The store is the single object that owns ALL database access.
+// Used by:
+//   index.ts   open, rebuildProjections(), close()
+//   relay.ts   write() for prompts and assistant text
+//   routes/*   write() and the read helpers
+//   piSession  getSession() / getMessages() for the model and history seed
 
 import { DatabaseSync } from "node:sqlite";
 
-// ── Domain types (mirror contracts.md) ──────────────────────────────
+// ── Domain types ────────────────────────────────────────────────────
+// The shapes the app passes around; snake_case column names never leave this file.
 
-/** Project / conversation lifecycle state. Used by both Project and Session. */
 export type State = "active" | "deferred" | "done";
 
-/** A project = its own agent + working dir. Read by routes; written via write(). */
+/** A project: one working directory plus the agent that runs inside it. */
 export interface Project {
   id: string;
   name: string;
@@ -35,78 +28,74 @@ export interface Project {
   updatedAt: number;
 }
 
-/** A conversation inside a project. Read by routes; written via write(). */
+/** A conversation (one thread) inside a project, addressed by its key. */
 export interface Session {
   key: string; // "agent:<projectId>:<thread>"
   name: string;
   projectId: string;
   state: State;
-  noInbox: boolean;
-  lastTouchedAt: number | null;
+  noInbox: boolean; // muted: hides it from the inbox rail
+  lastTouchedAt: number | null; // null → never touched
   /** Stored model slug (e.g. "deepseek/deepseek-v4.1-flash"). null → manager default. */
   modelId?: string | null;
   /** Stored thinking level (off|minimal|low|medium|high|xhigh|max). null → "off". */
   thinkingLevel?: string | null;
 }
 
-/** One message in a conversation. Read by routes + piSession; written via write(). */
 export interface Message {
   id: string;
   sessionKey: string;
   role: "user" | "assistant";
   text: string;
-  isStreaming: boolean;
+  isStreaming: boolean; // true while the assistant is still writing this text
   timestamp: number;
-  idx: number;
+  idx: number; // position in the conversation — history is read in idx order
+  authorEmail?: string | null; // who sent it; null for assistant output
 }
 
-/** One row as stored in the append-only log (flattened, generic). */
 export interface EventRow {
-  sequence: number;
+  sequence: number; // global order, assigned by SQLite
   eventType: string;
-  streamId: string; // sessionKey
+  streamId: string; // the project or conversation it belongs to
   payload: Record<string, unknown>;
   createdAt: number;
 }
 
-// ── Event types (contracts §4) ──────────────────────────────────────
+// ── Event types ─────────────────────────────────────────────────────
 
-/**
- * The typed form of an event your code creates. write() flattens it into an
- * EventRow (eventType = type, payload = payload) and appends it to the log.
- */
+/** Every fact write() accepts. Adding one: a line here + a case in applyEvent(). */
 export type DomainEvent =
   | { type: "project.created"; payload: { project: Project } }
   | { type: "project.state"; payload: { projectId: string; state: State } }
+  | { type: "project.renamed"; payload: { projectId: string; name: string } }
+  | { type: "project.deleted"; payload: { projectId: string } }
+  | { type: "project.access.granted" | "project.access.revoked"; payload: { projectId: string; email: string } }
   | { type: "session.created"; payload: { session: Session } }
   | { type: "session.state"; payload: { sessionKey: string; state: State } }
   | { type: "session.noInbox"; payload: { sessionKey: string; noInbox: boolean } }
   | { type: "session.model"; payload: { sessionKey: string; modelId: string } }
   | { type: "session.thinking"; payload: { sessionKey: string; level: string } }
   | { type: "session.touched"; payload: { sessionKey: string } }
-  | { type: "message.sent"; payload: { messageId: string; role: "user" | "assistant"; text: string; streaming?: boolean; sessionKey: string } };
+  | { type: "session.renamed"; payload: { sessionKey: string; name: string } }
+  | { type: "session.deleted"; payload: { sessionKey: string } }
+  // a message was written: the user's prompt, or one chunk of the answer
+  | { type: "message.sent"; payload: { messageId: string; role: "user" | "assistant"; text: string; streaming?: boolean; sessionKey: string; authorEmail?: string } };
 
 // ── Store ───────────────────────────────────────────────────────────
 
-/**
- * The state store. Created ONCE at startup (index.ts). One open DB connection
- * + a log (append) + projections (apply) + a combined write + cheap reads.
- */
+/** One instance per process. Owns the only DB connection. */
 export class StateStore {
   private db: DatabaseSync;
 
-  /** Open the SQLite DB file and create tables if missing. Called by index.ts. */
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.migrate();
   }
 
-  /** Close the DB connection. Called by index.ts on graceful shutdown. */
   close() {
     this.db.close();
   }
 
-  /** Create the 5 tables if they don't exist. Internal — called by constructor. */
   private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS orchestration_events (
@@ -154,11 +143,14 @@ export class StateStore {
         projector             TEXT PRIMARY KEY,
         last_applied_sequence INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS projection_project_access (
+        project_id TEXT NOT NULL,
+        email TEXT NOT NULL,
+        PRIMARY KEY (project_id, email)
+      );
     `);
 
-    // Add per-session model + thinking columns to existing DBs.
-    // node:sqlite's SQLite build rejects `ADD COLUMN IF NOT EXISTS`, so guard each
-    // ALTER with a PRAGMA table_info check (adding an existing column is an error).
+    // SQLite has no ADD COLUMN IF NOT EXISTS; adding an existing column is an error.
     const existingCols = new Set(
       (this.db.prepare("PRAGMA table_info(projection_sessions)").all() as Array<{ name: string }>).map((c) => c.name),
     );
@@ -168,14 +160,18 @@ export class StateStore {
     if (!existingCols.has("thinking_level")) {
       this.db.exec("ALTER TABLE projection_sessions ADD COLUMN thinking_level TEXT");
     }
+    // Added later: per-table soft delete and the message author.
+    for (const table of ["projection_projects", "projection_sessions", "projection_messages"]) {
+      const cols = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
+      const column = table === "projection_messages" ? "author_email TEXT" : "deleted INTEGER NOT NULL DEFAULT 0";
+      if (!cols.has(column.split(" ")[0]!)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
+    }
   }
 
   // ── Log (append) ─────────────────────────────────────────────────
 
-  /**
-   * Append an event to the log, return its global sequence (AUTOINCREMENT).
-   * Low-level — normally you call write() instead. Internal to the store.
-   */
+  /** Insert one log row and return its sequence; the payload is stringified JSON
+   *  text in payload_json and parsed back out on read. Use write(), not this. */
   appendEvent(eventType: string, streamId: string, payload: Record<string, unknown>, createdAt = Date.now()): number {
     const row = this.db
       .prepare(
@@ -185,10 +181,6 @@ export class StateStore {
     return row.sequence;
   }
 
-  /**
-   * Read events from an exclusive sequence offset, ordered by sequence.
-   * Used by rebuildProjections() to replay the log after a restart.
-   */
   readFromSequence(sequenceExclusive: number, limit = 1000): EventRow[] {
     return (this.db
       .prepare("SELECT sequence, event_type, stream_id, payload_json, created_at FROM orchestration_events WHERE sequence > ? ORDER BY sequence ASC LIMIT ?")
@@ -210,10 +202,8 @@ export class StateStore {
   // ── Projections (apply) ──────────────────────────────────────────
 
   /**
-   * Apply one event to the projections. Mirrors t3code's projectEvent +
-   * the delta-concatenation rule: streaming deltas APPEND, final events REPLACE.
-   * Returns true if a projection changed (used by write/rebuild to checkpoint).
-   * Internal — called by write() and rebuildProjections().
+   * Fold one log row into the tables, one case per event type. Throws rather
+   * than checkpoint an unapplied fact — log and tables would disagree forever.
    */
   applyEvent(ev: EventRow): boolean {
     const p = ev.payload;
@@ -226,7 +216,34 @@ export class StateStore {
       case "project.state": {
         this.db
           .prepare("UPDATE projection_projects SET state = ?, updated_at = ? WHERE id = ?")
-          .run(p.state as State, Date.now(), p.projectId as string);
+          .run(p.state as State, ev.createdAt, p.projectId as string);
+        return true;
+      }
+      case "project.renamed": {
+        this.db.prepare("UPDATE projection_projects SET name = ?, updated_at = ? WHERE id = ?").run(p.name as string, ev.createdAt, p.projectId as string);
+        return true;
+      }
+      case "project.deleted": {
+        // Soft delete: hide the project, its conversations and its access list.
+        this.db.prepare("UPDATE projection_projects SET deleted = 1 WHERE id = ?").run(p.projectId as string);
+        this.db.prepare("UPDATE projection_sessions SET deleted = 1 WHERE project_id = ?").run(p.projectId as string);
+        this.db.prepare("DELETE FROM projection_project_access WHERE project_id = ?").run(p.projectId as string);
+        return true;
+      }
+      case "project.access.granted": {
+        this.db.prepare("INSERT OR IGNORE INTO projection_project_access (project_id, email) VALUES (?, ?)").run(p.projectId as string, p.email as string);
+        return true;
+      }
+      case "project.access.revoked": {
+        this.db.prepare("DELETE FROM projection_project_access WHERE project_id = ? AND email = ?").run(p.projectId as string, p.email as string);
+        return true;
+      }
+      case "session.renamed": {
+        this.db.prepare("UPDATE projection_sessions SET name = ? WHERE key = ?").run(p.name as string, p.sessionKey as string);
+        return true;
+      }
+      case "session.deleted": {
+        this.db.prepare("UPDATE projection_sessions SET deleted = 1 WHERE key = ?").run(p.sessionKey as string);
         return true;
       }
       case "session.created": {
@@ -251,13 +268,14 @@ export class StateStore {
         return true;
       }
       case "session.touched": {
+        // Recency bump — this orders the inbox rail.
         this.db.prepare("UPDATE projection_sessions SET last_touched_at = ? WHERE key = ?").run(ev.createdAt, p.sessionKey as string);
         return true;
       }
       case "message.sent": {
         const streaming = p.streaming === true;
         const nextIndex = this.nextMessageIndex(p.sessionKey as string);
-        // t3code rule: append for streaming, replace for final
+        // A streaming chunk appends; the final text for the same id replaces it.
         const existing = this.db
           .prepare("SELECT text FROM projection_messages WHERE id = ?")
           .get(p.messageId as string) as { text: string } | undefined;
@@ -268,8 +286,8 @@ export class StateStore {
           : (p.text as string);
         this.db
           .prepare(
-            `INSERT INTO projection_messages (id, session_key, role, text, is_streaming, timestamp, idx)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO projection_messages (id, session_key, role, text, is_streaming, timestamp, idx, author_email)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                text = excluded.text,
                is_streaming = excluded.is_streaming,
@@ -283,17 +301,17 @@ export class StateStore {
             streaming ? 1 : 0,
             ev.createdAt,
             nextIndex,
+            (p.authorEmail as string | undefined) ?? null,
           );
-        // touch the session so inbox recency reflects activity
+        // A new message counts as activity for the inbox.
         this.db.prepare("UPDATE projection_sessions SET last_touched_at = ? WHERE key = ?").run(ev.createdAt, p.sessionKey as string);
         return true;
       }
       default:
-        return false;
+        throw new Error(`unknown event type "${ev.eventType}" at sequence ${ev.sequence}`);
     }
   }
 
-  /** Compute the next message index for a session. Internal — used by applyEvent. */
   private nextMessageIndex(sessionKey: string): number {
     const row = this.db
       .prepare("SELECT MAX(idx) AS m FROM projection_messages WHERE session_key = ?")
@@ -301,9 +319,9 @@ export class StateStore {
     return (row.m ?? -1) + 1;
   }
 
-  // ── Checkpoint + rebuild (t3code ProjectionPipeline.bootstrap) ────
+  // ── Checkpoint + rebuild ─────────────────────────────────────────
 
-  /** Read the last-applied sequence for a projector. Internal. */
+  /** How far the projections have been caught up with the log (0 = not at all). */
   private getCheckpoint(projector: string): number {
     const row = this.db.prepare("SELECT last_applied_sequence FROM projection_state WHERE projector = ?").get(projector) as
       | { last_applied_sequence: number }
@@ -311,7 +329,6 @@ export class StateStore {
     return row?.last_applied_sequence ?? 0;
   }
 
-  /** Record the last-applied sequence for a projector. Internal. */
   private checkpoint(projector: string, sequence: number) {
     this.db
       .prepare(
@@ -323,53 +340,76 @@ export class StateStore {
   }
 
   /**
-   * Replay the log from each projector's last applied sequence (t3code bootstrap).
-   * Called by index.ts at startup so the read models are current after a restart.
+   * Startup: replay log rows after the checkpoint, applying each with its
+   * checkpoint in one transaction so a crash never applies a row twice.
    */
   rebuildProjections() {
-    const projector = "default";
-    const from = this.getCheckpoint(projector);
-    for (const ev of this.readFromSequence(from)) {
-      if (this.applyEvent(ev)) this.checkpoint(projector, ev.sequence);
+    const projector = "default"; // one projector for the whole store
+    let from = this.getCheckpoint(projector);
+    for (;;) {
+      const batch = this.readFromSequence(from);
+      if (!batch.length) break;
+      for (const ev of batch) {
+        this.transaction(() => {
+          this.applyEvent(ev);
+          this.checkpoint(projector, ev.sequence);
+        });
+        from = ev.sequence;
+      }
     }
   }
 
-  // ── Write helper (append + project + checkpoint, the t3code transaction) ──
-
-  /**
-   * The core write path: append to log, apply projection, checkpoint.
-   * In t3code these run inside one SQL transaction; node:sqlite is
-   * synchronous so the ordering is inherently sequential. Returns the sequence.
-   * Called by relay.ts (user prompt + assistant deltas) and by the routes
-   * (project/session lifecycle writes).
-   */
-  write(ev: DomainEvent): number {
-    const seq = this.appendEvent(ev.type, this.streamIdOf(ev), ev.payload);
-    const row: EventRow = {
-      sequence: seq,
-      eventType: ev.type,
-      streamId: this.streamIdOf(ev),
-      payload: ev.payload,
-      createdAt: Date.now(),
-    };
-    if (this.applyEvent(row)) this.checkpoint("default", seq);
-    return seq;
+  private transaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
-  /** Derive the streamId (sessionKey / session key / project id) for an event. Internal. */
+  // ── Write helper ─────────────────────────────────────────────────
+
+  /**
+   * The only way to change state: append the fact, fold it into the tables and
+   * move the checkpoint — all in one transaction, because a crash mid-step
+   * would leave tables ahead of the checkpoint and the restart would replay
+   * (and for a streaming chunk, double) the fact. Returns the fact's sequence.
+   */
+  write(ev: DomainEvent): number {
+    return this.transaction(() => {
+      const createdAt = Date.now();
+      const seq = this.appendEvent(ev.type, this.streamIdOf(ev), ev.payload, createdAt);
+      const row: EventRow = {
+        sequence: seq,
+        eventType: ev.type,
+        streamId: this.streamIdOf(ev),
+        payload: ev.payload,
+        createdAt,
+      };
+      this.applyEvent(row);
+      this.checkpoint("default", seq);
+      return seq;
+    });
+  }
+
   private streamIdOf(ev: DomainEvent): string {
     const p = ev.payload as Record<string, unknown>;
     return (
       (p.sessionKey as string) ??
       (p.session as Session)?.key ??
       (p.project as Project)?.id ??
+      (p.projectId as string) ??
       "main"
     );
   }
 
-  // ── Upserts ──────────────────────────────────────────────────────
+  // ── Upserts (written only by applyEvent) ─────────────────────────
 
-  /** Insert-or-update a project row. Internal — called by applyEvent. */
+  /** Insert, overwrite, or resurrect the whole project row. */
   private upsertProject(pr: Project) {
     this.db
       .prepare(
@@ -377,12 +417,13 @@ export class StateStore {
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, emoji = excluded.emoji, dir = excluded.dir,
-           state = excluded.state, updated_at = excluded.updated_at`,
+           state = excluded.state, updated_at = excluded.updated_at,
+           deleted = 0`,
       )
       .run(pr.id, pr.name, pr.emoji ?? null, pr.dir, pr.state, pr.createdAt, pr.updatedAt);
   }
 
-  /** Insert-or-update a session row. Internal — called by applyEvent. */
+  /** Insert, overwrite, or resurrect the whole session row. */
   private upsertSession(s: Session) {
     this.db
       .prepare(
@@ -391,17 +432,16 @@ export class StateStore {
          ON CONFLICT(key) DO UPDATE SET
            name = excluded.name, project_id = excluded.project_id,
            state = excluded.state, no_inbox = excluded.no_inbox,
-           model_id = excluded.model_id, thinking_level = excluded.thinking_level`,
+           model_id = excluded.model_id, thinking_level = excluded.thinking_level,
+           deleted = 0`,
       )
       .run(s.key, s.name, s.projectId, s.state, s.noInbox ? 1 : 0, s.lastTouchedAt ?? null, s.modelId ?? null, s.thinkingLevel ?? null);
   }
 
-  // ── Read helpers ─────────────────────────────────────────────────
+  // ── Read helpers (soft-deleted rows are filtered out) ────────────
 
-  /** All projects. Called by GET /api/projects (routes/projects.ts). */
   getProjects(): Project[] {
-    // Map snake_case DB columns → the camelCase wire shape (Project).
-    return (this.db.prepare("SELECT * FROM projection_projects ORDER BY created_at ASC").all() as Array<Record<string, unknown>>).map((r) => ({
+    return (this.db.prepare("SELECT * FROM projection_projects WHERE deleted = 0 ORDER BY created_at ASC").all() as Array<Record<string, unknown>>).map((r) => ({
       id: r.id as string,
       name: r.name as string,
       emoji: (r.emoji as string | null) ?? undefined,
@@ -412,12 +452,9 @@ export class StateStore {
     })) as Project[];
   }
 
-  /**
-   * A single conversation by key. Used by piSession.open() to read
-   * the stored modelId/thinkingLevel. Returns undefined when the key is unknown.
-   */
+  /** One conversation by key; undefined when it or its project is deleted. */
   getSession(key: string): Session | undefined {
-    const r = this.db.prepare("SELECT * FROM projection_sessions WHERE key = ?").get(key) as Record<string, unknown> | undefined;
+    const r = this.db.prepare("SELECT s.* FROM projection_sessions s JOIN projection_projects p ON p.id = s.project_id WHERE s.key = ? AND s.deleted = 0 AND p.deleted = 0").get(key) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       key: r.key as string,
@@ -431,11 +468,9 @@ export class StateStore {
     } as Session;
   }
 
-  /** A project's sessions. Called by GET /api/projects/:id/sessions. */
   getSessions(projectId: string): Session[] {
-    // Map snake_case DB columns → the camelCase wire shape (Session).
     return (this.db
-      .prepare("SELECT * FROM projection_sessions WHERE project_id = ? ORDER BY last_touched_at DESC")
+      .prepare("SELECT s.* FROM projection_sessions s JOIN projection_projects p ON p.id = s.project_id WHERE s.project_id = ? AND s.deleted = 0 AND p.deleted = 0 ORDER BY s.last_touched_at DESC")
       .all(projectId) as Array<Record<string, unknown>>).map((r) => ({
       key: r.key as string,
       name: r.name as string,
@@ -448,12 +483,7 @@ export class StateStore {
     })) as Session[];
   }
 
-  /**
-   * A conversation's messages (history, not live). Called by GET
-   * /api/sessions/:key/messages and by piSession.open() to seed a resumed session.
-   */
   getMessages(sessionKey: string): Message[] {
-    // Map snake_case DB columns → the camelCase wire shape (Message).
     return (this.db
       .prepare("SELECT * FROM projection_messages WHERE session_key = ? ORDER BY idx ASC")
       .all(sessionKey) as Array<Record<string, unknown>>).map((r) => ({
@@ -464,19 +494,19 @@ export class StateStore {
       isStreaming: (r.is_streaming as number) === 1,
       timestamp: r.timestamp as number,
       idx: r.idx as number,
+      authorEmail: (r.author_email as string | null) ?? null,
     })) as Message[];
   }
 
   /**
-   * The inbox rail: active + not muted + touched within the window (default 48h).
-   * Called by GET /api/inbox (routes/inbox.ts).
+   * The inbox rail: active, not-muted conversations touched within the window
+   * (48h by default), newest first. Never-touched ones are always shown.
    */
   getInbox(now = Date.now(), windowMs = 48 * 60 * 60 * 1000): Session[] {
-    // Map snake_case DB columns → the camelCase wire shape (Session).
     return (this.db
       .prepare(
-        `SELECT s.* FROM projection_sessions s
-         WHERE s.state = 'active' AND s.no_inbox = 0
+        `SELECT s.* FROM projection_sessions s JOIN projection_projects p ON p.id = s.project_id
+         WHERE s.deleted = 0 AND p.deleted = 0 AND s.state = 'active' AND s.no_inbox = 0
            AND (s.last_touched_at IS NULL OR s.last_touched_at >= ?)
          ORDER BY COALESCE(s.last_touched_at, 0) DESC`,
       )
@@ -490,5 +520,20 @@ export class StateStore {
       modelId: (r.model_id as string | null) ?? null,
       thinkingLevel: (r.thinking_level as string | null) ?? null,
     })) as Session[];
+  }
+
+  /** One project by id, or undefined. Access uses this to authorise a request. */
+  getProject(id: string): Project | undefined {
+    return this.getProjects().find((p) => p.id === id);
+  }
+
+  /** Emails explicitly granted access to a project. The owner is not listed. */
+  getProjectUsers(projectId: string): string[] {
+    return (this.db.prepare("SELECT email FROM projection_project_access WHERE project_id = ? ORDER BY email").all(projectId) as Array<{ email: string }>).map((r) => r.email);
+  }
+
+  /** Was this email granted this project? (The owner bypasses this — see Access.) */
+  hasProjectAccess(projectId: string, email: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM projection_project_access WHERE project_id = ? AND email = ?").get(projectId, email);
   }
 }

@@ -59,6 +59,7 @@ interface BackendMessage {
   isStreaming: boolean;
   timestamp: number;
   idx: number;
+  authorEmail: string | null;
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ function mapSession(s: BackendSession): Session {
 }
 
 function mapMessage(m: BackendMessage): Message {
-  return { id: m.id, role: m.role, text: m.text };
+  return { id: m.id, role: m.role, text: m.text, authorEmail: m.authorEmail, isStreaming: m.isStreaming };
 }
 
 // ── READ ──────────────────────────────────────────────────────────────────
@@ -210,3 +211,13 @@ export async function setSessionThinking(key: string, level: string): Promise<vo
 export async function setZdr(zdr: boolean): Promise<void> {
   await request("/api/sessions/zdr", json("POST", { zdr }));
 }
+
+export interface CurrentUser { email: string; isOwner: boolean; }
+export const getMe = (): Promise<CurrentUser> => request("/api/me");
+export const getProjectUsers = (id: string): Promise<string[]> => request(`/api/projects/${encodeURIComponent(id)}/users`);
+export const grantProjectAccess = (id: string, email: string): Promise<unknown> => request(`/api/projects/${encodeURIComponent(id)}/users`, json("PUT", { email }));
+export const revokeProjectAccess = (id: string, email: string): Promise<unknown> => request(`/api/projects/${encodeURIComponent(id)}/users/${encodeURIComponent(email)}`, json("DELETE"));
+export const renameProject = (id: string, name: string): Promise<unknown> => request(`/api/projects/${encodeURIComponent(id)}/name`, json("PATCH", { name }));
+export const deleteProject = (id: string): Promise<unknown> => request(`/api/projects/${encodeURIComponent(id)}`, json("DELETE"));
+export const renameSession = (key: string, name: string): Promise<unknown> => request(`/api/sessions/${encodeURIComponent(key)}/name`, json("PATCH", { name }));
+export const deleteSession = (key: string): Promise<unknown> => request(`/api/sessions/${encodeURIComponent(key)}`, json("DELETE"));

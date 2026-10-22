@@ -1,38 +1,13 @@
-// piSession.ts — the session manager: open / RESUME a conversation's AgentSession.
+// piSession.ts — intermediary between the pi agent (the actual harness that runs) and our prompt.
 //
-// Responsibilities (step 4 scope):
-//   - one AgentSession per conversation key (open once, reuse)
-//   - right cwd (= project dir for execution), model, and tools
-//   - RESUME = seed the session's history from the store so a follow-up
-//     prompt has context (session.agent.state.messages = restored messages)
-//   - isolated: custom agentDir so we never touch ~/.pi/agent
+// This is the only file that talks to the pi agent runtime. Durable state
+// (history, model, thinking level) lives in SQLite; here we read it when a
+// conversation opens and keep the agent session in memory until it is closed.
 //
-// Provider: Command Code (command-code). Models are fetched live at startup
-// (fetchModels, in-memory, no fallback, curated to the models we offer); the default
-// model is deepseek-v4.1-flash.
-// ZDR (zero data retention) is a GLOBAL toggle: when on, every request carries
-// the x-cmd-zdr: 1 header (re-registers the provider — no restart needed).
-//
-// Extensions: index.ts decides which optional pi extensions to load and injects them as
-// plain data (opts.extensions). This file only applies them — their paths to the resource
-// loader, their tool names to the session — so it never learns which extensions exist,
-// or where that list came from.
-//
-// The relay (relay.ts) handles event capture + persistence; it subscribes to
-// the session this manager opens.
-//
-// ── FLOW (who calls what) ─────────────────────────────────────────────
-//   index.ts (entry):
-//     const manager = await PiSessionManager.create(store, { agentDir, cwd, extensions })
-//     ... on shutdown: manager.disposeAll()
-//   chat.ts (WS route):
-//     const handle = await manager.open(sessionKey, projectDir)  // per prompt
-//     const relay = attachAssistantRelay(store, key, handle.session)
-//     await handle.session.prompt(text)
-//   routes/sessions.ts (ZDR):
-//     GET  /api/sessions/zdr → { zdr }            (UI seeds its toggle from this)
-//     POST /api/sessions/zdr → manager.setZdr(bool) → re-register provider
-//   The manager holds one AgentSession per conversation key in `handles`.
+// Used by:
+//   index.ts            create() once at startup, disposeAll() at shutdown
+//   routes/chat.ts      open(key, dir) to run a turn
+//   routes/sessions.ts  getModels() / getZdr() / setZdr()
 import {
   createAgentSession,
   ModelRuntime,
@@ -42,32 +17,27 @@ import {
 import type { StateStore, Message } from "./stateStore.ts";
 import { fetchModels, inputModalitiesForModel, thinkingLevelMapForModel, DEFAULT_MODEL_ID, type CommandCodeModel, type ModelCatalogEntry } from "./commandCode.ts";
 
-/** Command Code Provider API base (OpenAI-compatible). Env override for tests. */
+/** Command Code provider URL (OpenAI-compatible). Tests can override with COMMANDCODE_API_BASE. */
 const COMMANDCODE_API_BASE = process.env.COMMANDCODE_API_BASE ?? "https://api.commandcode.ai/provider/v1";
 
-/**
- * What open() returns. Consumed by chat.ts (and relay.ts, which subscribes to
- * `handle.session`). `dispose()` closes the session and removes it from the
- * manager's map.
- */
+/** One open conversation, returned by open(). */
 export interface SessionHandle {
   sessionKey: string;
-  /** The model this handle is running (set at open; picker changes recreate the handle). */
+  /** The model this session runs. Changing the model rebuilds the handle. */
   modelId: string;
-  /** The raw AgentSession (relay/test subscribes to it). */
+  /** The pi agent session itself (relay.ts subscribes to it). */
   session: {
     subscribe(cb: (ev: unknown) => void): () => void;
     prompt(text: string): Promise<void>;
     abort(): Promise<void>;
+    setThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"): void;
     dispose(): void;
   };
+  /** Close the session and remove it from the manager's cache. */
   dispose(): void;
 }
 
-/**
- * pi's message shape, used to seed a resumed session's history.
- * Internal — produced by toAgentMessages() from store Message[] rows.
- */
+/** pi's message shape, used to seed a resumed session's history. */
 interface AgentMessageLike {
   role: "user" | "assistant";
   content: string | { type: "text"; text: string }[];
@@ -80,12 +50,9 @@ interface AgentMessageLike {
 }
 
 /**
- * Config for PiSessionManager.create(). Supplied by index.ts.
- * agentDir = isolated pi config dir (never ~/.pi/agent); cwd = default
- * project dir for execution.
- *
- * `extensions` is deliberately plain data: the session manager applies the list but
- * has no idea which extensions exist, or where the list came from.
+ * Settings for create().
+ * agentDir = isolated pi config directory (never ~/.pi/agent).
+ * cwd = default working directory for a project.
  */
 export interface PiSessionManagerOpts {
   agentDir: string;
@@ -93,17 +60,14 @@ export interface PiSessionManagerOpts {
   modelProvider?: string;
   modelId?: string;
   extensions: {
-    /** Extension entry points handed to the resource loader. */
+    /** Files to load as pi extensions. */
     paths: string[];
-    /** Tool names those extensions contribute, enabled on every session. */
+    /** Tools those extensions add to every session. */
     toolNames: string[];
   };
 }
 
-/**
- * The session manager. Created ONCE at startup (index.ts). Holds one
- * AgentSession per conversation key; open() creates or reuses.
- */
+/** Keeps one open pi session per conversation key. */
 export class PiSessionManager {
   private modelRuntime: ModelRuntime;
   private loader: DefaultResourceLoader;
@@ -111,34 +75,25 @@ export class PiSessionManager {
   private handles = new Map<string, SessionHandle>();
   private modelProvider: string;
   private modelId: string;
-  /** Cached Command Code catalog, fetched once at startup so getModels() can serve it. */
+  /** Model catalog fetched at startup; served to the UI by getModels(). */
   private models: CommandCodeModel[] = [];
-  /** Global ZDR (zero data retention) state. On by default. */
+  /** Global zero-data-retention switch (on by default). */
   private zdrEnabled = true;
 
   private constructor(store: StateStore, private opts: PiSessionManagerOpts) {
     this.store = store;
     this.modelProvider = opts.modelProvider ?? "command-code";
-    // Must be one of CURATED_MODELS (commandCode.ts): anything else is not registered
-    // with the provider, so open() could not resolve it.
+    // The default model must be in CURATED_MODELS, or open() cannot resolve it.
     this.modelId = opts.modelId ?? DEFAULT_MODEL_ID;
   }
 
-  /**
-   * Factory. Called once by index.ts at startup. Runs init() to register the
-   * command-code provider + credential and build the resource loader.
-   */
   static async create(store: StateStore, opts: PiSessionManagerOpts): Promise<PiSessionManager> {
-    const m = new PiSessionManager(store, opts);
+    const m = new PiSessionManager(store, opts); // this calls for the private constructor above. Not the class.
     await m.init();
     return m;
   }
 
-  /**
-   * Register the command-code provider + credential once, per process.
-   * Internal — called by create(). Must run BEFORE any session is created
-   * (model selection happens before extensions bind).
-   */
+  /** Runs once at startup, before any session is created: registers the provider and loads extensions. */
   private async init() {
     this.modelRuntime = await ModelRuntime.create();
     await this.registerCommandCode();
@@ -150,19 +105,13 @@ export class PiSessionManager {
       additionalExtensionPaths: this.opts.extensions.paths,
     });
     await this.loader.reload();
-    // Load failures are reported, not fatal — an extension that won't load just means
-    // the agent has fewer tools. The loader is ours, so its errors are ours to report.
+    // A failed extension is not fatal: the agent just has fewer tools.
     for (const { path, error } of this.loader.getExtensions().errors) {
       console.error(`[extensions] failed to load ${path}: ${error}`);
     }
   }
 
-  /**
-   * (Re-)register the command-code provider with the live model catalog.
-   * The ZDR header is a provider-level header (like the upstream extension's
-   * COMMANDCODE_ZDR=1), so toggling ZDR just re-registers — the runtime merges
-   * over the previous config and keeps the apiKey.
-   */
+  /** Register the provider with the latest model catalog and ZDR header. */
   private async registerCommandCode() {
     let models: CommandCodeModel[] = [];
     try {
@@ -170,16 +119,13 @@ export class PiSessionManager {
     } catch (err) {
       console.error("[command-code] model fetch failed:", err);
     }
-    this.models = models; // build-gw6.5.1: cache for getModels()
+    this.models = models; // keep the catalog for getModels()
     this.modelRuntime.registerProvider("command-code", {
       name: "Command Code",
       baseUrl: COMMANDCODE_API_BASE,
       apiKey: "",
       api: "openai-completions",
-      // ZDR-off MUST pass an empty object, NOT undefined: pi's registerProvider()
-      // merges re-registrations and skips undefined values, so `undefined` would
-      // leave the stale x-cmd-zdr:1 header in place and non-ZDR models would keep
-      // failing with cmd_zdr_no_providers (silently swallowed -> empty reply).
+      // {} clears the ZDR header; undefined would keep the previous one.
       headers: this.zdrEnabled ? { "x-cmd-zdr": "1" } : {},
       models: models.map((m) => ({
         id: m.id,
@@ -195,27 +141,21 @@ export class PiSessionManager {
     });
   }
 
-  /**
-   * Global ZDR toggle. When on, every request carries x-cmd-zdr: 1
-   * (zero data retention). Re-registers the provider so the change applies
-   * to the next request — no restart needed.
-   */
+  /** Turn zero-data-retention on/off for every request (re-registers the provider). */
   async setZdr(enabled: boolean) {
     this.zdrEnabled = enabled;
     await this.registerCommandCode();
   }
 
-  /** Current global ZDR state (for the UI). */
+  /** Current zero-data-retention state, for the UI. */
   getZdr(): boolean {
     return this.zdrEnabled;
   }
 
   /**
-   * The model catalog as served by GET /api/models. Pure composition
-   * over commandCode.ts helpers — no new model logic. `thinkingLevelMap` comes from the
-   * per-model curated table (the API doesn't expose it); a model with no reasoning gets
-   * `undefined`. The separate `reasoning` boolean was dropped — "reasons?" is exactly
-   * "has a thinkingLevelMap?".
+   * The model list served by GET /api/models.
+   * thinkingLevelMap is not in the provider API, so it comes from the curated
+   * table in commandCode.ts.
    */
   getModels(): ModelCatalogEntry[] {
     return this.models.map((m) => ({
@@ -226,20 +166,14 @@ export class PiSessionManager {
     }));
   }
 
-  /**
-   * Resolve the default model object from the runtime. Internal — used by open()
-   * when the stored model id is missing or no longer in the catalog.
-   */
+  /** The registered model object for an id; throws if it is unknown. */
   private resolveModel(modelId: string): ReturnType<ModelRuntime["getModel"]> {
     const model = this.modelRuntime.getModel(this.modelProvider, modelId);
     if (!model) throw new Error(`model not found: ${this.modelProvider}/${modelId}`);
     return model;
   }
 
-  /**
-   * Convert store history to AgentMessage[] (pi's message shape).
-   * Internal — used by open() to seed a resumed session.
-   */
+  /** Converts stored Message rows into pi's message shape, for history seeding. */
   private toAgentMessages(history: Message[]): AgentMessageLike[] {
     return history.map((m) =>
       m.role === "user"
@@ -258,27 +192,26 @@ export class PiSessionManager {
   }
 
   /**
-   * Open a conversation. If already open, returns the existing handle.
-   * If the conversation has prior messages, seeds the session with them (resume).
-   * Called by chat.ts per prompt.
-   * @param sessionKey e.g. "agent:main:1"
-   * @param projectDir execution cwd (the project's working directory)
+   * Return the open session for a conversation, creating it if needed.
+   * History from SQLite is loaded on first open so the agent has context.
+   * @param sessionKey e.g. "agent:<projectId>:<thread>"
+   * @param projectDir working directory for the agent's tools
    */
   async open(sessionKey: string, projectDir: string): Promise<SessionHandle> {
-    // The stored model (fall back to manager default when null or no
-    // longer in the catalog). Resolved BEFORE the cached-handle check so a picker
-    // change on an already-open conversation is honored (see the recreate below).
+    // Resolve the model before checking the cache, so a model change is noticed.
+    // Fall back to the default when the stored model is unset or no longer offered.
     const stored = this.store.getSession(sessionKey);
     const modelId = stored?.modelId && this.models.some((m) => m.id === stored.modelId)
       ? stored.modelId
       : this.modelId;
 
     const existing = this.handles.get(sessionKey);
-    // Same model as the cached handle -> reuse it (the common path).
-    if (existing && existing.modelId === modelId) return existing;
-    // The picker changed the model for an already-open conversation: the cached handle
-    // still runs the OLD model. Dispose it and rebuild with the new model + fresh
-    // history seed from the store.
+    // Same model: reuse the in-memory session, applying the latest thinking level.
+    if (existing && existing.modelId === modelId) {
+      existing.session.setThinkingLevel((stored?.thinkingLevel ?? "off") as Parameters<typeof existing.session.setThinkingLevel>[0]);
+      return existing;
+    }
+    // Different model: drop the old session and rebuild it with fresh history.
     if (existing) existing.dispose();
 
     const history = this.store.getMessages(sessionKey);
@@ -290,14 +223,14 @@ export class PiSessionManager {
       sessionManager: SessionManager.inMemory(),
       cwd: projectDir,
       model,
-      tools: ["read", "bash", "write", "edit", ...this.opts.extensions.toolNames], // core tools + injected extensions
+      tools: ["read", "bash", "write", "edit", ...this.opts.extensions.toolNames], // core tools + extension tools
     });
 
-    // Apply thinking level (off when unset). setThinkingLevel clamps to what the model supports.
+    // "off" unless the conversation stored a level; setThinkingLevel clamps it.
     const level = (stored?.thinkingLevel ?? "off") as Parameters<typeof session.setThinkingLevel>[0];
     session.setThinkingLevel(level);
 
-    // RESUME: seed prior conversation history so the next prompt has context
+    // Seed stored history so the next prompt continues the conversation.
     if (history.length > 0) {
       session.agent.state.messages = this.toAgentMessages(history) as never;
     }
@@ -306,7 +239,7 @@ export class PiSessionManager {
       sessionKey,
       modelId,
       session,
-      dispose: () => {
+      dispose: () => { //exists for caching purposes
         session.dispose();
         this.handles.delete(sessionKey);
       },
@@ -315,10 +248,13 @@ export class PiSessionManager {
     return handle;
   }
 
-  /**
-   * Close every open session. Called by index.ts on graceful shutdown.
-   */
+  /** Close every open session (called on shutdown). */
   disposeAll() {
     for (const h of [...this.handles.values()]) h.dispose();
+  }
+
+  /** Close one conversation's session (called when it is deleted). */
+  dispose(sessionKey: string): void {
+    this.handles.get(sessionKey)?.dispose();
   }
 }

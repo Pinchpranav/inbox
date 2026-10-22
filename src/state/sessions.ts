@@ -14,7 +14,7 @@
 
 import { ref, computed } from "vue";
 import * as api from "../api/projectsApi";
-import { connError, refreshView, type ViewData } from "./backend";
+import { connError, currentUser, refreshView, type ViewData } from "./backend";
 import type { Project, Session, State } from "../data/domain";
 
 // ── state ──────────────────────────────────────────────────────────────────
@@ -33,6 +33,7 @@ export const selectedProjectName = computed(() => {
 
 // ── the 5s poll (this module drives it — the poll keeps the VIEW fresh) ───
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let viewVersion = 0;
 
 export function startPolling(): void {
   stopPolling();
@@ -46,9 +47,33 @@ export function stopPolling(): void {
 }
 
 /** One reachability check: adopt the backend's view, or keep the current one. */
-async function pollOnce(): Promise<void> {
-  const view = await refreshView();
+export async function pollOnce(): Promise<void> {
+  const version = viewVersion;
+  const view = await refreshView(() => version === viewVersion);
+  if (version !== viewVersion) return;
   if (view) adoptView(view);
+  else if (!currentUser.value) adoptView({ projects: [], sessions: [] });
+}
+
+/** Invalidate in-flight polls before removing revoked/deleted data. */
+export function removeProject(id: string): void {
+  viewVersion++;
+  adoptView({ projects: projects.value.filter((p) => p.id !== id), sessions: sessions.value.filter((s) => s.agentId !== id) });
+}
+
+export function removeSession(key: string): void {
+  viewVersion++;
+  adoptView({ projects: projects.value, sessions: sessions.value.filter((s) => s.key !== key) });
+}
+
+export function refreshAfterChange(): void {
+  viewVersion++;
+  void pollOnce();
+}
+
+export function resetView(): void {
+  viewVersion++;
+  adoptView({ projects: [], sessions: [] });
 }
 
 /** Adopt a backend view: replace both lists, drop a selection that vanished. */

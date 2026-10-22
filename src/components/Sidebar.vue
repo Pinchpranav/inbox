@@ -18,12 +18,12 @@ const props = defineProps<{
   connError?: string;
   /** Global ZDR (zero data retention) state, owned by backend.ts. */
   zdr?: boolean;
+  isOwner: boolean;
 }>();
 
 const emit = defineEmits<{
   select: [key: string];
   collapse: [];
-  "open-settings": [];
   "new-project": [];
   "new-thread": [agentId: string];
   "set-session-state": [key: string, state: State];
@@ -31,6 +31,11 @@ const emit = defineEmits<{
   "move-session": [key: string, destAgentId: string];
   "set-project-state": [agentId: string, state: State];
   "toggle-zdr": [];
+  "manage-users": [projectId: string];
+  "rename-project": [project: Project];
+  "delete-project": [project: Project];
+  "rename-session": [session: Session];
+  "delete-session": [session: Session];
 }>();
 
 function connTitle(): string {
@@ -101,11 +106,11 @@ function onMove(s: Session) {
   <aside class="sidebar">
     <div class="head">
       <span class="conn-dot" :data-conn="conn ?? 'loading'" :title="connTitle()"></span>
-      <button class="settings-btn" title="Backend settings" @click="$emit('open-settings')">⋯</button>
       <div class="brand-wrap">
         <h1 class="brand">Threads</h1>
         <button
           class="zdr-btn zdr-inline"
+          :disabled="!isOwner"
           :class="{ on: zdr }"
           :title="zdr ? 'ZDR on — zero data retention' : 'ZDR off'"
           @click="$emit('toggle-zdr')"
@@ -121,7 +126,6 @@ function onMove(s: Session) {
       <div v-if="conn === 'error' && projects.length === 0" class="offline-card">
         <p class="offline-title">Backend not connected</p>
         <p class="offline-sub">{{ connError || "Start the server, then check again." }}</p>
-        <button class="offline-btn" @click="$emit('open-settings')">Open settings</button>
       </div>
 
       <template v-else>
@@ -149,7 +153,7 @@ function onMove(s: Session) {
       <!-- PROJECTS section label + add -->
       <div class="section-label">
         <span>Projects</span>
-        <button class="add-btn" title="New project" @click="$emit('new-project')">+</button>
+        <button v-if="isOwner" class="add-btn" title="New project" @click="$emit('new-project')">+</button>
       </div>
 
       <!-- PROJECT GROUPS -->
@@ -172,6 +176,14 @@ function onMove(s: Session) {
           <span class="count">{{ projectSessions(p.id).length }}</span>
           <span class="caret-hover" aria-hidden="true">▾</span>
           <button class="add-btn" title="New thread" @click="$emit('new-thread', p.id)">+</button>
+          <div class="project-menu">
+            <button class="add-btn" :aria-label="`Actions for ${p.name}`" @click="openMenu = openMenu === p.id ? null : p.id">⋯</button>
+            <div v-if="openMenu === p.id" class="project-actions">
+              <button v-if="isOwner" @click="emit('manage-users', p.id); closeMenu()">Users</button>
+              <button @click="emit('rename-project', p); closeMenu()">Rename</button>
+              <button @click="emit('delete-project', p); closeMenu()">Delete</button>
+            </div>
+          </div>
         </div>
 
         <div v-show="!collapsed[p.id]" class="group-body">
@@ -188,6 +200,8 @@ function onMove(s: Session) {
             @set-state="(st) => { emit('set-session-state', s.key, st); closeMenu(); }"
             @toggle-no-inbox="() => { emit('toggle-no-inbox', s.key); closeMenu(); }"
             @move="onMove(s)"
+            @rename="emit('rename-session', s); closeMenu()"
+            @delete="emit('delete-session', s); closeMenu()"
             @toggle-menu="openMenu = openMenu === s.key ? null : s.key"
           />
 
@@ -212,6 +226,8 @@ function onMove(s: Session) {
               @set-state="(st) => { emit('set-session-state', s.key, st); closeMenu(); }"
               @toggle-no-inbox="() => { emit('toggle-no-inbox', s.key); closeMenu(); }"
               @move="onMove(s)"
+              @rename="emit('rename-session', s); closeMenu()"
+              @delete="emit('delete-session', s); closeMenu()"
               @toggle-menu="openMenu = openMenu === s.key ? null : s.key"
             />
           </div>
@@ -223,6 +239,10 @@ function onMove(s: Session) {
 </template>
 
 <style scoped>
+.project-menu { position: relative; }
+.project-actions { position: absolute; right: 0; top: 100%; z-index: 5; min-width: 110px; padding: 4px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 4px 12px #0002; }
+.project-actions button { display: block; width: 100%; text-align: left; padding: 7px 10px; }
+.project-actions button:hover { background: var(--border); }
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -299,25 +319,6 @@ function onMove(s: Session) {
   top: auto;
   transform: none;
 }
-/* Settings: a small ⋯ by the conn dot. */
-.settings-btn {
-  position: absolute;
-  left: 40px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 24px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  color: var(--text-soft);
-  font-size: 17px;
-  line-height: 1;
-}
-.settings-btn:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-  background: var(--bg-soft-2);
-}
 .conn-dot {
   position: absolute;
   left: 16px;
@@ -363,23 +364,10 @@ function onMove(s: Session) {
   color: var(--text);
 }
 .offline-sub {
-  margin: 0 0 10px;
+  margin: 0;
   font-size: 12px;
   color: var(--text-faint);
   word-break: break-word;
-}
-.offline-btn {
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: transparent;
-  color: var(--text-soft);
-  cursor: pointer;
-}
-.offline-btn:hover {
-  color: var(--text);
-  background: var(--bg-soft-2);
 }
 
 .scroll {

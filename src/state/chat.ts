@@ -1,262 +1,123 @@
-// Live conversation state, one "drawer" per thread. `live` is a map keyed by
-// session key; each drawer holds that
-// thread's settled messages, its in-progress reply, its status line, and its
-// own socket. The UI renders ONE drawer (the selected thread), but every open
-// drawer keeps working — so switching threads no longer aborts a stream.
-//
-// The server keeps a turn running after the browser's socket closes
-// (server/routes/chat.ts onClose only detaches the view), and the 5s poll
-// re-syncs settled state, so a background turn's result is never lost.
-//
-// Dependency direction (no cycles): chat.ts → sessions.ts (touchSession),
-// backend.ts (conn/connError), api, domain.
-
 import { reactive } from "vue";
-import * as api from "../api/projectsApi";
 import { ChatSocket } from "../api/chatSocket";
-import { conn, connError } from "./backend";
 import { touchSession } from "./sessions";
 import type { Message } from "../data/domain";
 
-/** Everything that is live (not yet settled) for one thread. */
 export interface LiveState {
-  /** Settled messages: transcript history + finished replies. */
   messages: Message[];
-  /** History fetch in flight (drawer just created for a selected thread). */
   loading: boolean;
-  /** The assistant reply being streamed right now. */
-  liveText: string;
-  /** Status line under the live reply ("preparing…", "generating…"). */
   phase: string | null;
   streaming: boolean;
+  connected: boolean;
+  pending: boolean;
+  draft: string;
+  error: string;
   socket: ChatSocket | null;
-  abortFallback: ReturnType<typeof setTimeout> | null;
 }
 
 const live = reactive<Record<string, LiveState>>({});
 
-function drawer(key: string): LiveState {
-  let d = live[key];
-  if (!d) {
-    // Wrap in reactive() BEFORE storing: the local handle must be the same
-    // proxy Vue tracks. If we store the raw object and return it, every
-    // mutation on first creation (d.loading, d.messages, …) bypasses
-    // reactivity and the UI never re-renders — the "first click shows
-    // loading forever, second click works" bug.
-    d = reactive({
-      messages: [],
-      loading: false,
-      liveText: "",
-      phase: null,
-      streaming: false,
-      socket: null,
-      abortFallback: null,
-    }) as LiveState;
-    live[key] = d;
-  }
-  return d;
-}
-
-/** The drawer the UI should render for `key` (creates it on first read). */
 export function liveFor(key: string): LiveState {
-  return drawer(key);
+  if (!live[key]) live[key] = {
+    messages: [], loading: true, phase: null, streaming: false,
+    connected: false, pending: false, draft: "", error: "", socket: null,
+  };
+  return live[key]!;
 }
 
-// ── history ────────────────────────────────────────────────────────────────
+function upsert(d: LiveState, message: Message): void {
+  const index = d.messages.findIndex((m) => m.id === message.id);
+  if (index < 0) d.messages.push(message);
+  else d.messages[index] = message;
+}
 
-/** Load a thread's settled transcript into its drawer (on selection).
- *  If that thread is mid-stream, the local drawer is fresher than the
- *  persisted copy, so we keep it. */
-export async function loadHistory(key: string): Promise<void> {
-  const d = drawer(key);
-  d.loading = true;
-  if (conn.value !== "ok") {
-    d.messages = [];
-    d.loading = false;
-    return;
-  }
-  try {
-    const rows = await api.fetchMessages(key);
-    if (!d.streaming) d.messages = rows;
-    // Turn-status rehydration: after a refresh the drawer is brand
-    // new, but the server may still be running a turn for this conversation.
-    // Ask it; if yes, re-derive the live state instead of staying silent until
-    // the next message.end lands.
-    if (!d.streaming) {
-      try {
-        if (await api.fetchSessionStatus(key)) {
-          d.streaming = true;
-          d.phase = "generating…";
-          watchRehydratedTurn(key); // no socket -> poll the server until the turn ends
-        }
-      } catch {
-        /* status check is best-effort; the poll re-syncs settled state anyway */
+/** Subscribe on viewing, with history and busy state supplied by one snapshot. */
+export function loadHistory(key: string): void {
+  const d = liveFor(key);
+  if (d.socket) return;
+  const socket = new ChatSocket(key, (frame) => {
+    // A deleted/revoked drawer must never be restored by late callbacks.
+    if (live[key] !== d) return;
+    if (frame.type === "snapshot") {
+      d.messages = frame.messages.map((m) => ({ ...m, isStreaming: frame.running && m.isStreaming }));
+      d.streaming = frame.running;
+      d.phase = frame.running ? "generating…" : null;
+      d.connected = true;
+      d.loading = false;
+      d.pending = false;
+      d.error = "";
+    } else if (frame.type === "accepted") {
+      d.pending = false;
+      d.draft = "";
+    } else if (frame.type === "message.end") {
+      upsert(d, frame.message);
+      touchSession(key);
+    } else if (frame.type === "message.delta") {
+      const message = d.messages.find((m) => m.id === frame.messageId);
+      if (message) message.text += frame.text;
+      else upsert(d, { id: frame.messageId, role: "assistant", text: frame.text, isStreaming: true });
+    } else if (frame.type === "status") {
+      d.streaming = frame.phase === "streaming";
+      d.phase = d.streaming ? "generating…" : null;
+      if (!d.streaming) {
+        d.pending = false;
+        for (const m of d.messages) m.isStreaming = false;
       }
+      if (frame.errorMessage) d.error = frame.errorMessage;
+    } else if (frame.type === "error") {
+      // Rejected commands do not change the conversation's shared busy state.
+      d.pending = false;
+      d.error = frame.errorMessage;
     }
-  } catch (err) {
-    if (!d.streaming) d.messages = [];
-    connError.value = `messages: ${err instanceof Error ? err.message : String(err)}`;
-  } finally {
+  }, (forbidden) => {
+    if (live[key] !== d) return;
+    d.connected = false;
+    d.pending = false;
     d.loading = false;
-  }
-}
-
-// ── rehydrated-turn watcher ─────────────────────────────────
-
-/** A rehydrated turn has no socket, so no terminal frame will ever arrive.
- *  Poll the status endpoint; when the server says the turn is done, reload
- *  the (now-settled) transcript and clear the live state. 
- *  This is so that send button isn't being blocked for eternity. It is just a 
- *  stopgap implementation. I should see if a better implementation is possible 
- *  later ig.
- *  */
-
-const watchers = new Map<string, ReturnType<typeof setInterval>>();
-
-function watchRehydratedTurn(key: string): void {
-  if (watchers.has(key)) return; // one watcher per drawer
-  const timer = setInterval(async () => {
-    const d = live[key];
-    // The user sent a new prompt meanwhile -> a real socket owns this turn now.
-    if (!d || !d.streaming || d.socket) {
-      clearInterval(timer);
-      watchers.delete(key);
-      return;
-    }
-    try {
-      if (await api.fetchSessionStatus(key)) return; // still running
-      // Turn finished server-side: settle the drawer from the store.
-      clearInterval(timer);
-      watchers.delete(key);
+    d.error = forbidden ? "Conversation access ended." : "Reconnecting…";
+    if (forbidden) {
+      d.messages = [];
+      d.draft = "";
       d.streaming = false;
-      d.phase = null;
-      try {
-        d.messages = await api.fetchMessages(key);
-      } catch {
-        /* the 5s poll will pick the transcript up */
-      }
-    } catch {
-      /* transient network error -> retry next tick */
     }
-  }, 5000);
-  watchers.set(key, timer);
-}
-
-function stopWatcher(key: string): void {
-  const timer = watchers.get(key);
-  if (timer) {
-    clearInterval(timer);
-    watchers.delete(key);
-  }
-}
-
-// ── turns ─────────────────────────────────────────────────────────────────
-
-/** Start a turn in `key`'s drawer: push the user message, open the socket,
- *  stream deltas into liveText. One turn at a time per thread. */
-export function send(key: string, text: string): void {
-  if (conn.value !== "ok") return;
-  const d = drawer(key);
-  if (d.streaming) return; // one turn at a time per thread
-
-  d.messages.push({ id: `u${Date.now()}`, role: "user", text });
-  touchSession(key);
-  d.streaming = true;
-  d.liveText = "";
-  d.phase = "preparing…";
-
-  const socket = new ChatSocket(key, {
-    onDelta: (t) => {
-      d.liveText += t;
-    },
-    onEnd: (m) => {
-      const settled = m.text?.trim() || d.liveText || "";
-      if (settled) {
-        d.messages.push({ id: m.id || `a${Date.now()}`, role: "assistant", text: settled });
-      }
-      d.liveText = "";
-    },
-    onStatus: (p) => {
-      if (p === "idle") {
-        d.streaming = false;
-        d.phase = null;
-        closeTurn(key);
-      } else if (p === "aborted") {
-        abortReal(key);
-        closeTurn(key);
-      } else if (p === "error") {
-        errorReal(key, "⚠ chat error");
-        closeTurn(key);
-      } else if (p === "streaming") {
-        d.phase = "generating…";
-      }
-    },
-    onError: (msg) => {
-      errorReal(key, msg);
-      closeTurn(key);
-    },
-    onOpen: () => {
-      socket.sendPrompt(text);
-    },
   });
   d.socket = socket;
   socket.connect();
 }
 
-/** Ask the server to stop the turn in `key`'s drawer. The server answers
- *  with a terminal status (aborted); the fallback timer un-hangs the UI if
- *  that never arrives. */
+export function send(key: string, text: string): void {
+  const d = liveFor(key);
+  if (!d.connected || d.streaming || d.pending) return;
+  d.error = "";
+  d.pending = true;
+  if (!d.socket?.send({ type: "prompt", text })) {
+    d.pending = false;
+    d.error = "Connection unavailable. Your draft is saved.";
+  }
+}
+
 export function abort(key: string): void {
-  const d = drawer(key);
-  if (!d.streaming || !d.socket) return;
-  d.socket.sendAbort();
-  if (d.abortFallback) clearTimeout(d.abortFallback);
-  d.abortFallback = setTimeout(() => {
-    d.abortFallback = null;
-    if (d.streaming) abortReal(key);
-    closeTurn(key);
-  }, 2000);
+  const d = liveFor(key);
+  if (d.connected && d.streaming) d.socket?.send({ type: "abort" });
 }
 
-/** Close the socket + fallback timer for `key`'s drawer. */
-export function closeTurn(key: string): void {
-  stopWatcher(key);
-  const d = drawer(key);
-  if (d.abortFallback) {
-    clearTimeout(d.abortFallback);
-    d.abortFallback = null;
-  }
-  if (d.socket) {
-    d.socket.close();
-    d.socket = null;
+export function forget(key: string): void {
+  const d = live[key];
+  if (!d) return;
+  d.socket?.close();
+  delete live[key];
+}
+
+export function forgetProject(projectId: string): void {
+  for (const key of Object.keys(live)) {
+    if (key.split(":")[1] === projectId) forget(key);
   }
 }
 
-/** Close every open turn (app unmount). */
+export function retainSessions(keys: Set<string>): void {
+  for (const key of Object.keys(live)) if (!keys.has(key)) forget(key);
+}
+
 export function closeAll(): void {
-  for (const key of Object.keys(live)) closeTurn(key);
-  for (const timer of watchers.values()) clearInterval(timer);
-  watchers.clear();
-}
-
-// ── settlement ────────────────────────────────────────────────────────────
-
-function abortReal(key: string): void {
-  const d = drawer(key);
-  const partial = d.liveText;
-  if (partial.trim()) {
-    d.messages.push({ id: `a${Date.now()}`, role: "assistant", text: `${partial} ⏹ (stopped)` });
-  }
-  d.liveText = "";
-  d.phase = null;
-  d.streaming = false;
-}
-
-function errorReal(key: string, msg: string): void {
-  const d = drawer(key);
-  const text = msg?.trim() || "⚠ chat error";
-  d.messages.push({ id: `a${Date.now()}`, role: "assistant", text });
-  d.liveText = "";
-  d.phase = null;
-  d.streaming = false;
+  for (const key of Object.keys(live)) forget(key);
 }

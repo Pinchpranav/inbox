@@ -8,13 +8,15 @@
 import { Hono } from "hono";
 import type { StateStore } from "../stateStore.ts";
 import type { InboxSession } from "../types.ts";
+import type { Access } from "../access.ts";
+import { identity } from "../auth.ts";
 
-export function createInboxRouter(store: StateStore): Hono {
+export function createInboxRouter(store: StateStore, access: Access): Hono {
   const app = new Hono();
 
   // GET /api/inbox — active + not muted + touched within the window (default 48h).
   app.get("/api/inbox", (c) => {
-    const sessions = store.getInbox();
+    const sessions = store.getInbox().filter((s) => access.canProject(identity(c), s.projectId));
     const inbox: InboxSession[] = sessions.map((s) => ({
       key: s.key,
       name: s.name,

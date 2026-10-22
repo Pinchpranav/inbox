@@ -1,0 +1,4 @@
+# Keep line endings predictable across Windows and Linux.
+# Store LF in the repository and check LF out everywhere, so an editor
+# never sees a mixed file and renders stray CR bytes as ^M.
+* text=auto eol=lf

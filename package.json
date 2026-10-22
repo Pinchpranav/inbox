@@ -14,6 +14,7 @@
     "@hono/node-server": "latest",
     "@hono/node-ws": "latest",
     "hono": "latest",
+    "jose": "^6.1.3",
     "markdown-it": "^14.3.0",
     "markdown-it-task-lists": "^2.1.1",
     "pi-agent-browser-native": "^0.6.15",

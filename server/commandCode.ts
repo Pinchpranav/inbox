@@ -120,9 +120,7 @@ export const DEFAULT_MODELS_URL = "https://api.commandcode.ai/provider/v1/models
  * means CURATED_MODELS has gone stale, not that the provider is down). No file
  * cache, no fallback — the caller holds the result in memory.
  *
- * m.headers is deliberately NOT copied: with CMD_ZDR=1 in the environment the
- * official mapping bakes x-cmd-zdr onto every model, which would make ZDR-on
- * sticky. Our ZDR toggle owns that header at the provider level (piSession).
+ * Omit model headers so env-baked ZDR cannot override the runtime toggle.
  */
 export async function fetchModels(url = DEFAULT_MODELS_URL): Promise<CommandCodeModel[]> {
   const models = (await loadModels(url))
